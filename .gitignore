@@ -1,0 +1,8 @@
+/source/bin/
+/source/obj/
+/GroundRoads.dll
+/.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates

@@ -1,0 +1,20 @@
+{
+  "id": "GroundRoads",
+  "version": "0.1.0",
+  "display_name": "Highway Roads",
+  "description_short": "Build smooth two-lane highways with automatic routing, lane-following traffic, higher speeds, and reduced maintenance.",
+  "description_long": "Highway Roads adds smoothly planned, two-way highways for road vehicles. The multi-pivot construction tool supports flowing curves, repeated S-bends, and seamless tangent-continuous extensions. Vehicles automatically compare their normal route with reachable highway alternatives, enter and leave at suitable connections, and stay aligned with their lane through curves. When both routes have similar travel costs, the traffic director prefers the highway. Road-capable vehicles can reach 140% of their normal maximum speed on suitable highway segments and use 50% of their base maintenance while driving on mod roads. Controls: left-click to place the start and additional pivots, double-click to build, right-click to cancel, and Shift-double-click to continue directly from the completed endpoint. No separate on/off-ramp tools are required. The mod can be added to existing saves, but should not be removed after highway pieces have been built.",
+  "authors": [
+    "Maxim",
+    "TaskEcho"
+  ],
+  "primary_dlls": [
+    "GroundRoads.dll"
+  ],
+  "primary_mod_class_name": "GroundRoads.GroundRoadsMod",
+  "non_locking_dll_load": true,
+  "can_add_to_saved_game": true,
+  "can_remove_from_saved_game": false,
+  "min_game_version": "0.8.6",
+  "max_verified_game_version": "0.8.6c"
+}
