@@ -192,6 +192,8 @@ public sealed class HighwayTrafficDirector : IDisposable
     private readonly IRoadsManager m_roadsManager;
     private readonly ClearancePathabilityProvider m_pathabilityProvider;
     private Dictionary<RoadGraphNodeKey, List<HighwayEdge>> m_cachedGraph;
+    private HashSet<RoadGraphNodeKey> m_entryAccessNodes = new();
+    private HashSet<RoadGraphNodeKey> m_exitAccessNodes = new();
     private bool m_graphIsDirty = true;
 
     public HighwayTrafficDirector(
@@ -219,6 +221,8 @@ public sealed class HighwayTrafficDirector : IDisposable
             this,
             OnRoadChanged);
         m_cachedGraph = null;
+        m_entryAccessNodes.Clear();
+        m_exitAccessNodes.Clear();
     }
 
     internal bool TryCreateRoutes(
@@ -287,6 +291,11 @@ public sealed class HighwayTrafficDirector : IDisposable
 
         foreach (var pair in graph)
         {
+            if (!m_entryAccessNodes.Contains(pair.Key))
+            {
+                continue;
+            }
+
             // Seed only complete, safe first road edges. A zero-road label at
             // the root could otherwise be cheaper yet unable to enter its
             // first segment, blocking a valid label arriving via highway.
@@ -380,7 +389,8 @@ public sealed class HighwayTrafficDirector : IDisposable
         var exits = new List<CandidateExit>();
         foreach (var distance in distances)
         {
-            if (!previous.ContainsKey(distance.Key))
+            if (!previous.ContainsKey(distance.Key) ||
+                !m_exitAccessNodes.Contains(distance.Key))
             {
                 continue;
             }
@@ -458,6 +468,7 @@ public sealed class HighwayTrafficDirector : IDisposable
                 path,
                 roadDistance,
                 candidate.Cost));
+
             if (routes.Count >= MaxRouteCandidates)
             {
                 break;
@@ -516,12 +527,15 @@ public sealed class HighwayTrafficDirector : IDisposable
         }
 
         var graph = new Dictionary<RoadGraphNodeKey, List<HighwayEdge>>();
+        var entryAccessNodes = new HashSet<RoadGraphNodeKey>();
+        var exitAccessNodes = new HashSet<RoadGraphNodeKey>();
         var skippedLongLanes = 0;
         var skippedLongEntities = 0;
         foreach (var entity in
                  m_entitiesManager.GetAllEntitiesOfType<RoadEntityBase>())
         {
-            if (entity.RoadProto is not HighwaySegmentProto ||
+            if (entity.RoadProto is not IHighwayNetworkProto networkProto ||
+                !networkProto.ParticipatesInHighwayNetwork ||
                 !entity.CanPathfindThrough())
             {
                 continue;
@@ -558,6 +572,15 @@ public sealed class HighwayTrafficDirector : IDisposable
                 continue;
             }
 
+            if (entity.RoadProto is IHighwayPortProto portProto)
+            {
+                AddTerrainAccessNodes(
+                    portProto,
+                    entity.Transform,
+                    entryAccessNodes,
+                    exitAccessNodes);
+            }
+
             for (var laneIndex = 0;
                  laneIndex < entity.RoadLanesCount;
                 laneIndex++)
@@ -590,13 +613,30 @@ public sealed class HighwayTrafficDirector : IDisposable
         }
 
         m_cachedGraph = graph;
+        m_entryAccessNodes = entryAccessNodes;
+        m_exitAccessNodes = exitAccessNodes;
         m_graphIsDirty = false;
         return m_cachedGraph;
     }
 
+    private static void AddTerrainAccessNodes(
+        IHighwayPortProto portProto,
+        TileTransform transform,
+        HashSet<RoadGraphNodeKey> entryAccessNodes,
+        HashSet<RoadGraphNodeKey> exitAccessNodes)
+    {
+        for (var index = 0; index < portProto.HighwayPortCount; index++)
+        {
+            var port = portProto.GetHighwayPort(index, transform);
+            entryAccessNodes.Add(port.InboundNode);
+            exitAccessNodes.Add(port.OutboundNode);
+        }
+    }
+
     private void OnRoadChanged(IRoadGraphEntity entity)
     {
-        if (entity.RoadProto is HighwaySegmentProto)
+        if (entity.RoadProto is IHighwayNetworkProto networkProto &&
+            networkProto.ParticipatesInHighwayNetwork)
         {
             m_graphIsDirty = true;
         }
@@ -607,7 +647,8 @@ public sealed class HighwayTrafficDirector : IDisposable
     {
         foreach (var segment in path)
         {
-            if (segment.Entity.RoadProto is HighwaySegmentProto)
+            if (segment.Entity.RoadProto is IHighwayMainlineProto mainline &&
+                mainline.ParticipatesInHighwayNetwork)
             {
                 return true;
             }

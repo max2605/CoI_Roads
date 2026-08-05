@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Mafi;
+using Mafi.Collections;
 using Mafi.Collections.ImmutableCollections;
 using Mafi.Core;
 using Mafi.Core.Entities;
@@ -10,6 +11,7 @@ using Mafi.Core.Entities.Static.Layout;
 using Mafi.Core.Input;
 using Mafi.Core.Prototypes;
 using Mafi.Core.Roads;
+using Mafi.Core.Simulation;
 using Mafi.Core.Trains;
 using Mafi.Localization;
 using Mafi.Unity;
@@ -39,6 +41,8 @@ public sealed class GroundRoadDragController :
     private const float DoubleClickWindowSeconds = 0.30f;
     private const float MaximumSearchSecondsPerGoal = 8f;
     private const float PointerClickMaxDistanceSquared = 64f;
+    private const int PortSnapSearchRange = 12;
+    private const int PortSnapMaxDistanceSquared = 9;
 
     private readonly struct Piece
     {
@@ -64,10 +68,13 @@ public sealed class GroundRoadDragController :
     private readonly LayoutEntityPreviewManager m_previewManager;
     private readonly ConfigSerializationContext m_configContext;
     private readonly ITrainTrackPathFinder m_trackPathFinder;
+    private readonly IEntitiesManager m_entitiesManager;
+    private readonly ISimLoopEvents m_simLoopEvents;
     private readonly Dictionary<(string TrackId, bool Reflected),
         HighwaySegmentProto> m_segmentsByTrackId;
     private readonly List<Piece> m_pieces = new();
     private readonly List<LayoutEntityPreview> m_previews = new();
+    private readonly Lyst<HighwayPort> m_openPorts = new();
 
     private bool m_isActive;
     private bool m_hasStart;
@@ -88,9 +95,14 @@ public sealed class GroundRoadDragController :
     private Tile3f m_searchGoal;
     private Tile3f m_lastConfirmationEndpoint;
     private Tile3f m_pendingPrimaryGoal;
+    private HighwayPort? m_searchGoalPort;
+    private HighwayPort? m_pendingPrimaryGoalPort;
     private Option<TrainTrackPlan> m_lockedPlan;
     private Option<TrainTrackPlan> m_currentPlan;
     private TrainTrackNodeDirection? m_forcedStartDirection;
+    private TrainTrackNodeDirection? m_forcedEndDirection;
+    private TrainTrackNodeDirection? m_searchEndDirection;
+    private TrainTrackNodeDirection? m_pendingPrimaryEndDirection;
     private TrainTrackGraphNodeKey? m_continuationStartNode;
     private Piece? m_continuationPredecessor;
     private BatchCreateStaticEntitiesCmd m_pendingBuildCommand;
@@ -118,6 +130,8 @@ public sealed class GroundRoadDragController :
         LayoutEntityPreviewManager previewManager,
         ConfigSerializationContext configContext,
         ITrainTrackPathFinder trackPathFinder,
+        IEntitiesManager entitiesManager,
+        ISimLoopEvents simLoopEvents,
         ProtosDb protosDb)
     {
         m_inputScheduler = context.InputScheduler;
@@ -127,12 +141,15 @@ public sealed class GroundRoadDragController :
         m_previewManager = previewManager;
         m_configContext = configContext;
         m_trackPathFinder = trackPathFinder;
+        m_entitiesManager = entitiesManager;
+        m_simLoopEvents = simLoopEvents;
         m_segmentsByTrackId = protosDb.All<HighwaySegmentProto>()
             .ToDictionary(
                 x => (
                     x.SourceTrackProto.Id.Value,
                     x.CorrectsReflectedHandedness),
                 x => x);
+        m_simLoopEvents.Sync.AddNonSaveable(this, SyncUpdate);
     }
 
     public void Activate()
@@ -325,15 +342,32 @@ public sealed class GroundRoadDragController :
         {
             if (isPrimaryClickRelease)
             {
-                m_anchor = m_trackPathFinder.GetStartFromTile(
-                    m_terrainCursor.Tile3f);
+                if (TryGetClosestOpenPort(
+                        m_terrainCursor.Tile3i,
+                        out var snappedPort))
+                {
+                    m_anchor = snappedPort.Center.CornerTile3f;
+                    m_forcedStartDirection =
+                        snappedPort.OutboundNode.Direction;
+                    m_directionIndex = GetDirectionIndex(
+                        m_forcedStartDirection.Value);
+                    m_automaticStartDirection = false;
+                }
+                else
+                {
+                    m_anchor = m_trackPathFinder.GetStartFromTile(
+                        m_terrainCursor.Tile3f);
+                    m_automaticStartDirection = true;
+                    m_forcedStartDirection = null;
+                }
                 m_hasStart = true;
                 m_previewDirty = true;
                 m_lockedPlan = Option<TrainTrackPlan>.None;
                 m_currentPlan = Option<TrainTrackPlan>.None;
                 m_currentPlanIsExact = false;
-                m_automaticStartDirection = true;
-                m_forcedStartDirection = null;
+                m_forcedEndDirection = null;
+                m_searchEndDirection = null;
+                m_searchGoalPort = null;
                 m_searchInitialized = false;
                 m_searchInProgress = false;
                 m_searchGoalStartedAt = Time.unscaledTime;
@@ -399,6 +433,23 @@ public sealed class GroundRoadDragController :
     public void DisposeForHotReload()
     {
         Deactivate();
+        m_simLoopEvents.Sync.RemoveNonSaveable(this, SyncUpdate);
+    }
+
+    private void SyncUpdate()
+    {
+        if (!m_isActive || !m_terrainCursor.HasValue)
+        {
+            m_openPorts.Clear();
+            return;
+        }
+
+        HighwayPortDiscovery.FillOpenPortsNear(
+            m_entitiesManager,
+            m_terrainCursor.Tile3i.Xy,
+            PortSnapSearchRange,
+            includeJunctionPorts: true,
+            result: m_openPorts);
     }
 
     private bool UpdatePendingBuild()
@@ -522,7 +573,8 @@ public sealed class GroundRoadDragController :
     {
         if (!m_currentPlan.HasValue ||
             !m_currentPlanIsExact ||
-            !AllPreviewsValid())
+            !AllPreviewsValid() ||
+            !DoesCurrentPlanMateSelectedGoalPort())
         {
             return false;
         }
@@ -570,12 +622,13 @@ public sealed class GroundRoadDragController :
     {
         var clickTime = Time.unscaledTime;
         var clickPosition = Input.mousePosition;
-        var clickedGoal = m_trackPathFinder.GetGoalFromTile(
-            m_terrainCursor.Tile3f.SetZ(m_anchor.Z),
-            m_anchor,
-            CreateOptions());
+        var clickedGoal = ResolveCursorGoal(
+            out var endDirection,
+            out var goalPort);
         if (m_hasPendingPrimaryClick &&
             m_pendingPrimaryGoal == clickedGoal &&
+            m_pendingPrimaryEndDirection == endDirection &&
+            AreSamePort(m_pendingPrimaryGoalPort, goalPort) &&
             clickTime - m_pendingPrimaryClickTime >= 0f &&
             clickTime - m_pendingPrimaryClickTime <=
                 DoubleClickWindowSeconds &&
@@ -592,6 +645,8 @@ public sealed class GroundRoadDragController :
         m_pendingPrimaryWantsConfirmation = false;
         m_pendingPrimaryContinueAfterBuild = false;
         m_pendingPrimaryGoal = clickedGoal;
+        m_pendingPrimaryEndDirection = endDirection;
+        m_pendingPrimaryGoalPort = goalPort;
         m_pendingPrimaryClickTime = clickTime;
         m_pendingPrimaryScreenPosition = clickPosition;
     }
@@ -605,7 +660,11 @@ public sealed class GroundRoadDragController :
             return false;
         }
 
-        if (m_searchGoal != m_pendingPrimaryGoal)
+        if (m_searchGoal != m_pendingPrimaryGoal ||
+            m_searchEndDirection != m_pendingPrimaryEndDirection ||
+            !AreSamePort(
+                m_searchGoalPort,
+                m_pendingPrimaryGoalPort))
         {
             InvalidatePendingPrimaryClick();
             return false;
@@ -751,6 +810,8 @@ public sealed class GroundRoadDragController :
         m_hasPendingPrimaryClick = false;
         m_pendingPrimaryWantsConfirmation = false;
         m_pendingPrimaryContinueAfterBuild = false;
+        m_pendingPrimaryEndDirection = null;
+        m_pendingPrimaryGoalPort = null;
     }
 
     private void UpdatePathSearch()
@@ -758,28 +819,37 @@ public sealed class GroundRoadDragController :
         // Highway prototypes are intentionally flat. TerrainCursor follows
         // the local terrain height, so project the target onto the anchor
         // plane or the train finder can only return an endless approximation.
-        var rawGoal = m_terrainCursor.Tile3f.SetZ(m_anchor.Z);
-        var directionGoal = m_hasPendingPrimaryClick
-            ? m_pendingPrimaryGoal
-            : rawGoal;
+        Tile3f directionGoal;
+        Tile3f goal;
+        HighwayPort? goalPort;
+        TrainTrackNodeDirection? endDirection;
+        if (m_hasPendingPrimaryClick)
+        {
+            goal = m_pendingPrimaryGoal;
+            directionGoal = goal;
+            endDirection = m_pendingPrimaryEndDirection;
+            goalPort = m_pendingPrimaryGoalPort;
+        }
+        else
+        {
+            goal = ResolveCursorGoal(
+                out endDirection,
+                out goalPort);
+            directionGoal = goal;
+        }
+
+        m_forcedEndDirection = endDirection;
         UpdateAutomaticStartDirection(directionGoal);
+        var options = CreateOptions(endDirection);
 
-        var options = CreateOptions();
-        var goal = m_hasPendingPrimaryClick
-            ? m_pendingPrimaryGoal
-            : m_trackPathFinder.GetGoalFromTile(
-                rawGoal,
-                m_anchor,
-                options);
-
-        if (goal != m_searchGoal)
+        if (goal != m_searchGoal ||
+            endDirection != m_searchEndDirection ||
+            !AreSamePort(goalPort, m_searchGoalPort))
         {
             m_searchGoal = goal;
-            m_searchGoalStartedAt = Time.unscaledTime;
-            m_previewDirty = true;
-            m_currentPlan = Option<TrainTrackPlan>.None;
-            m_currentPlanIsExact = false;
-            ShowLockedPlanOnly();
+            m_searchEndDirection = endDirection;
+            m_searchGoalPort = goalPort;
+            RestartSearch();
         }
 
         if (m_hasPendingPrimaryClick &&
@@ -904,7 +974,8 @@ public sealed class GroundRoadDragController :
         RestartSearch();
     }
 
-    private TrainTrackPathFinderOptions CreateOptions()
+    private TrainTrackPathFinderOptions CreateOptions(
+        TrainTrackNodeDirection? forcedEndDirection)
     {
         // Prevent the native near-goal singularity mode from limiting a
         // route to one direction/radius change. This is what enables
@@ -917,8 +988,112 @@ public sealed class GroundRoadDragController :
 
         return new TrainTrackPathFinderOptions(
             forcedStartDirectionA: m_forcedStartDirection,
+            forcedEndDirectionA: forcedEndDirection,
             buildDirection: TrainTrackTrajectoryDirection.Bidirectional,
             flags: flags);
+    }
+
+    private Tile3f ResolveCursorGoal(
+        out TrainTrackNodeDirection? endDirection,
+        out HighwayPort? goalPort)
+    {
+        Tile3f rawGoal;
+        if (TryGetClosestOpenPort(
+                m_terrainCursor.Tile3i,
+                out var snappedPort))
+        {
+            rawGoal = snappedPort.Center.CornerTile3f;
+            endDirection = snappedPort.InboundNode.Direction;
+            goalPort = snappedPort;
+        }
+        else
+        {
+            rawGoal = m_terrainCursor.Tile3f.SetZ(m_anchor.Z);
+            endDirection = null;
+            goalPort = null;
+        }
+
+        return m_trackPathFinder.GetGoalFromTile(
+            rawGoal,
+            m_anchor,
+            CreateOptions(endDirection));
+    }
+
+    private bool TryGetClosestOpenPort(
+        Tile3i cursor,
+        out HighwayPort result)
+    {
+        var found = false;
+        var bestDistance = long.MaxValue;
+        result = default;
+        foreach (var port in m_openPorts)
+        {
+            var distance = port.Center.Xy.DistanceSqrTo(cursor.Xy);
+            if (distance > PortSnapMaxDistanceSquared ||
+                (found && distance >= bestDistance))
+            {
+                continue;
+            }
+
+            found = true;
+            bestDistance = distance;
+            result = port;
+        }
+
+        return found;
+    }
+
+    private static bool AreSamePort(
+        HighwayPort? left,
+        HighwayPort? right)
+    {
+        if (!left.HasValue || !right.HasValue)
+        {
+            return left.HasValue == right.HasValue;
+        }
+
+        return left.Value.Center == right.Value.Center &&
+            left.Value.InboundNode == right.Value.InboundNode &&
+            left.Value.OutboundNode == right.Value.OutboundNode;
+    }
+
+    private bool DoesCurrentPlanMateSelectedGoalPort()
+    {
+        if (!m_searchGoalPort.HasValue)
+        {
+            return true;
+        }
+
+        if (m_pieces.Count == 0)
+        {
+            return false;
+        }
+
+        var target = m_searchGoalPort.Value;
+        var targetIsStillOpen = false;
+        foreach (var openPort in m_openPorts)
+        {
+            if (AreSamePort(openPort, target))
+            {
+                targetIsStillOpen = true;
+                break;
+            }
+        }
+
+        if (!targetIsStillOpen)
+        {
+            return false;
+        }
+
+        var lastPiece = m_pieces[m_pieces.Count - 1];
+        var physicalEndPortIndex = lastPiece.TrackDirection ==
+            TrainTrackTrajectoryDirection.Backward
+            ? 0
+            : 1;
+        var physicalEndPort = lastPiece.Proto.GetHighwayPort(
+            physicalEndPortIndex,
+            lastPiece.Transform);
+        return physicalEndPort.IsExactMateOf(target);
     }
 
     private void RestartSearch()
@@ -1196,8 +1371,17 @@ public sealed class GroundRoadDragController :
         SynchronizePlan(plan);
         if (m_pieces.Count == 0 ||
             !AllPreviewsValid() ||
-            !TryGetExactPlanEndNode(plan, out var continuationNode))
+            !TryGetExactPlanEndNode(plan, out var continuationNode) ||
+            !DoesCurrentPlanMateSelectedGoalPort())
         {
+            if (m_searchGoalPort.HasValue)
+            {
+                Log.Warning(
+                    "GroundRoads: snapped target port changed or no longer " +
+                    "mates the planned highway end; placement was rejected.");
+                RestartSearch();
+            }
+
             return false;
         }
 
@@ -1259,6 +1443,11 @@ public sealed class GroundRoadDragController :
         m_lockedPlan = Option<TrainTrackPlan>.None;
         m_currentPlan = Option<TrainTrackPlan>.None;
         m_forcedStartDirection = null;
+        m_forcedEndDirection = null;
+        m_searchEndDirection = null;
+        m_searchGoalPort = null;
+        m_pendingPrimaryEndDirection = null;
+        m_pendingPrimaryGoalPort = null;
         m_continuationStartNode = null;
         m_continuationPredecessor = null;
         m_builtPrefixStepCount = 0;
@@ -1285,14 +1474,26 @@ public sealed class GroundRoadDragController :
 public sealed class GroundRoadToolbarRegistrator : IHotReloadUi
 {
     private readonly GroundRoadDragController m_controller;
+    private readonly HighwayTIntersectionPlacementController
+        m_tIntersectionController;
+    private readonly HighwayCrossIntersectionPlacementController
+        m_crossIntersectionController;
+    private readonly HighwayRoundaboutPlacementController
+        m_roundaboutController;
 
     public GroundRoadToolbarRegistrator(
         ToolbarHud hud,
         UiContext context,
         ProtosDb protosDb,
-        GroundRoadDragController controller)
+        GroundRoadDragController controller,
+        HighwayTIntersectionPlacementController tIntersectionController,
+        HighwayCrossIntersectionPlacementController crossIntersectionController,
+        HighwayRoundaboutPlacementController roundaboutController)
     {
         m_controller = controller;
+        m_tIntersectionController = tIntersectionController;
+        m_crossIntersectionController = crossIntersectionController;
+        m_roundaboutController = roundaboutController;
         var representative = protosDb.All<HighwaySegmentProto>().First();
         var vehicleCategory = protosDb.GetOrThrow<ToolbarCategoryProto>(
             GroundRoadIds.ToolbarCategory);
@@ -1324,10 +1525,86 @@ public sealed class GroundRoadToolbarRegistrator : IHotReloadUi
                 floaterTitle: name,
                 floaterDesc: description,
                 order: 0));
+
+        AddNodeItem(
+            hud,
+            context,
+            tIntersectionController,
+            tIntersectionController.Prototype,
+            categories,
+            "GroundRoads_TIntersectionTool_Name",
+            "T-Kreuzung bauen",
+            "Platziert eine dreiseitige Kreuzung. Rastet nur an freien " +
+            "Enden normaler Autobahnsegmente ein; zwischen zwei Knoten " +
+            "muss ein kurzes Autobahnstück liegen. Drehen ändert die " +
+            "Ausrichtung.",
+            order: 10);
+        AddNodeItem(
+            hud,
+            context,
+            crossIntersectionController,
+            crossIntersectionController.Prototype,
+            categories,
+            "GroundRoads_CrossIntersectionTool_Name",
+            "+-Kreuzung bauen",
+            "Platziert eine vierseitige ungeregelte Kreuzung mit Geradeaus-, " +
+            "Links- und Rechtsabbiegern. Zwischen zwei Knoten muss ein " +
+            "kurzes Autobahnstück liegen.",
+            order: 20);
+        AddNodeItem(
+            hud,
+            context,
+            roundaboutController,
+            roundaboutController.Prototype,
+            categories,
+            "GroundRoads_RoundaboutTool_Name",
+            "Kreisverkehr bauen",
+            "Platziert einen vierarmigen Kreisverkehr für Rechtsverkehr. " +
+            "Alle Bewegungen folgen derselben Kreisrichtung. Zwischen zwei " +
+            "Knoten muss ein kurzes Autobahnstück liegen.",
+            order: 30);
+
+    }
+
+    private static void AddNodeItem<TController>(
+        ToolbarHud hud,
+        UiContext context,
+        TController controller,
+        HighwayJunctionProto proto,
+        ImmutableArray<ToolbarEntryData> categories,
+        string localizationId,
+        string displayName,
+        string description,
+        int order)
+        where TController : HighwayNodePlacementControllerBase
+    {
+        var name = Loc.Str(
+            localizationId,
+            displayName,
+            "toolbar name for a GroundRoads highway node tool");
+        hud.AddItem(
+            new ControllerToolbarMenuItem(
+                context,
+                controller,
+                name,
+                proto.IconPath,
+                categories,
+                extraLockingProto: null,
+                groupProto: null,
+                popupProto: proto,
+                floaterTitle: name,
+                floaterDesc: Loc.Str(
+                    localizationId + "_Description",
+                    description,
+                    "toolbar description for a GroundRoads highway node tool"),
+                order: order));
     }
 
     public void DisposeForHotReload()
     {
         m_controller.DisposeForHotReload();
+        m_tIntersectionController.DisposeForHotReload();
+        m_crossIntersectionController.DisposeForHotReload();
+        m_roundaboutController.DisposeForHotReload();
     }
 }

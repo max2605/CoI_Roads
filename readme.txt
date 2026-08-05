@@ -1,4 +1,4 @@
-Highway Roads 0.1.0
+Highway Roads 0.2.0
 ===================
 
 Kompatibel mit Captain of Industry v0.8.6 bis v0.8.6c.
@@ -36,13 +36,39 @@ Startrichtung manuell wählen und „Spiegeln“ sie umkehren. Nach einem Pivot
 bleibt die Anschlussrichtung absichtlich fest, damit keine Winkelbrüche
 entstehen.
 
+Kreuzungen und Kreisverkehr
+---------------------------
+
+Im Autobahn-Menü stehen drei zusätzliche Knotenwerkzeuge bereit:
+
+  - T-Kreuzung mit drei Armen und sechs gerichteten Fahrbeziehungen
+  - +-Kreuzung mit vier Armen sowie Geradeaus-, Links- und Rechtsabbiegern
+  - vierarmiger Kreisverkehr mit einheitlicher Fahrtrichtung für Rechtsverkehr
+
+Die Knotenwerkzeuge rasten ausschließlich an freien Enden normaler
+Autobahnsegmente ein. Zwei Kreuzungen beziehungsweise Kreisverkehre werden
+nicht direkt miteinander verschnappt: Dazwischen muss ein kurzes
+Autobahnsegment liegen; 8 bis 16 Kacheln Abstand sind empfehlenswert. Dadurch
+hat die native Fahrzeugsteuerung zwischen zwei Konfliktbereichen genug Platz.
+Der Mod erzwingt dafür einen Mindestabstand von 24 Kacheln zwischen den
+Knotenmittelpunkten. Bei Überlappung oder zu geringem Abstand wird die Vorschau
+rot; ein Bauklick erklärt, dass dazwischen ein kurzes Autobahnstück nötig ist.
+Neue Autobahnen rasten beim ersten und letzten Punkt weiterhin an freien
+Knotenarmen ein. Position, Fahrtrichtung und Spurtyp werden dabei exakt
+verglichen. Mit „Drehen“ lässt sich in 22,5-Grad-Schritten insbesondere die
+fehlende Seite der T-Kreuzung wählen. Belegte Mittelflächen verhindern das
+Platzieren über Gebäuden; die Fahrspuren des Kreisverkehrs werden physisch
+gemeinsam genutzt.
+
+Kreuzungen sind derzeit ungeregelt: Der native Straßengraph des Spiels kennt
+für kreuzende Mod-Fahrspuren keine Ampel- oder Vorfahrtsreservierung.
+
 Automatische Zufahrt
 --------------------
 
-Separate Auf- und Abfahrten sind nicht mehr erforderlich. Fahrzeuge können an
-jedem gerichteten Segmentübergang auf eine erreichbare Autobahn wechseln und
-sie an einem späteren Übergang wieder verlassen. Alte Rampen bleiben in
-bestehenden Spielständen ladefähig, erscheinen aber nicht mehr im Baumenü.
+Separate Auf- und Abfahrten sind nicht erforderlich. Fahrzeuge können an jedem
+gerichteten Segmentübergang auf eine erreichbare Autobahn wechseln und sie an
+einem späteren Übergang wieder verlassen.
 
 Routing
 -------
@@ -65,10 +91,11 @@ Teilpfade bleiben vom Spiel speicherbare VehicleTerrainPathSegment- und
 VehicleRoadPathSegment-Objekte.
 
 Der Zielanflug übernimmt auch den nativen „nah genug“-Vertrag dynamischer
-Ziele, etwa bei Baggeraufträgen. Bis zu 8 sinnvoll sortierte Ausfahrten werden
-geprüft, bevor auf den gesicherten Engine-Pfad zurückgefallen wird. Gebogene
-Spuren bleiben in beiden Fahrtrichtungen im Graphen; ihre sichere erste
-Zielentfernung und ihre tatsächliche Weglänge werden getrennt bewertet.
+Ziele, etwa bei Baggeraufträgen. Bis zu 8 sinnvoll sortierte
+Autobahnausstiege werden geprüft, bevor auf den gesicherten Engine-Pfad
+zurückgefallen wird. Gebogene Spuren bleiben in beiden Fahrtrichtungen im
+Graphen; ihre sichere erste Zielentfernung und ihre tatsächliche Weglänge werden
+getrennt bewertet.
 
 Exakte Lane-Endpunkte und befahrbare Geländezugänge werden getrennt verwaltet.
 Ist ein Endpunkt wegen Straßenbreite oder Fahrzeug-Clearance kein gültiges
@@ -81,19 +108,18 @@ Wirkung
 
   - Alle straßenfähigen Fahrzeuge fahren auf Mod-Straßen mit 140 %
     Maximalgeschwindigkeit.
-  - Autobahnfahrzeuge folgen den Lane-Trajektorien auch in Kurven. Dabei wird
-    nur die seitliche Abweichung korrigiert, sodass sie an gewählten
-    Segmentübergängen die Autobahn wieder zum Ziel verlassen können.
+  - Auf normalen Autobahnsegmenten folgen Fahrzeuge den Lane-Trajektorien auch
+    in Kurven. Kreuzungen und Kreisverkehre behalten die native Lenkung, damit
+    Übergänge zwischen ihren kurzen Abbiegespuren nicht zurückgesetzt werden.
   - Der Wartungsverbrauch auf Mod-Straßen beträgt 50 %.
   - Niedriger Treibstoff und Defekte wirken weiterhin normal.
 
 Kompatibilität
 --------------
 
-Alle alten Prototype-IDs einschließlich der Rampen bleiben zum Laden früherer
-Spielstände registriert, erscheinen aber nicht mehr im Baumenü. Bereits
-platzierte Rampen dürfen stehen bleiben, werden für neue Routen jedoch nicht
-benötigt.
+Historische Rampen-IDs bleiben ausschließlich zum Laden früherer Spielstände
+registriert. Sie erscheinen nicht im Baumenü und sind kein Teil neuer Routen.
+Kreuzungen und Kreisverkehr verwenden stabile V1-IDs.
 
 Der Mod kann einem bestehenden Spielstand hinzugefügt werden. Sobald ein
 Straßenbauteil gespeichert wurde, darf der Mod aus diesem Spielstand nicht

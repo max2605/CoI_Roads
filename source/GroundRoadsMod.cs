@@ -49,7 +49,15 @@ public sealed class GroundRoadsMod : IMod
             .AsAllInterfaces();
         depBuilder.RegisterDependency<GroundRoadModelFactory>().AsAllInterfaces();
         depBuilder.RegisterDependency<GroundRoadVehicleEffects>().AsSelf();
+        depBuilder.RegisterDependency<HighwayJunctionPlacementValidator>()
+            .AsAllInterfaces();
         depBuilder.RegisterDependency<GroundRoadDragController>().AsSelf();
+        depBuilder.RegisterDependency<HighwayTIntersectionPlacementController>()
+            .AsSelf();
+        depBuilder.RegisterDependency<HighwayCrossIntersectionPlacementController>()
+            .AsSelf();
+        depBuilder.RegisterDependency<HighwayRoundaboutPlacementController>()
+            .AsSelf();
         depBuilder.RegisterDependency<GroundRoadToolbarRegistrator>()
             .AsSelf()
             .AsAllInterfaces();
@@ -69,8 +77,8 @@ public sealed class GroundRoadsMod : IMod
             resolver.Resolve<GroundRoadToolbarRegistrator>();
         Log.Info(
             "GroundRoads: initialized. Train-planned highways, automatic " +
-            "traffic-director routing, lane-bound driving, and road " +
-            "bonuses are active; " +
+            "traffic-director routing, T/+ intersections, roundabouts, " +
+            "lane-bound driving, and road bonuses are active; " +
             $"loadedSave={gameWasLoaded}.");
     }
 

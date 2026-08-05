@@ -16,6 +16,7 @@ public sealed class GroundRoadModelFactory :
     IProtoModelFactory<GroundRoadEntranceProto>,
     IProtoModelFactory<GroundRoadAccessibleSegmentProto>,
     IProtoModelFactory<HighwaySegmentProto>,
+    IProtoModelFactory<HighwayJunctionProto>,
     IProtoModelFactory<HighwayOnRampProto>,
     IProtoModelFactory<HighwayOffRampProto>
 {
@@ -55,6 +56,11 @@ public sealed class GroundRoadModelFactory :
         return CreateModel(proto);
     }
 
+    public GameObject Create(HighwayJunctionProto proto)
+    {
+        return CreateModel(proto);
+    }
+
     public GameObject Create(HighwayOnRampProto proto)
     {
         return CreateModel(proto);
@@ -75,22 +81,41 @@ public sealed class GroundRoadModelFactory :
 
         builder.SetTransform(modelOffset);
 
-        for (var laneIndex = 0;
-             laneIndex < proto.LanesTrajectories.Length;
-             laneIndex++)
+        if (proto is HighwayJunctionProto junction)
         {
-            // The logical MaskAllowAll lane is four tiles wide so every truck
-            // class may use it. Visually an autobahn lane is only two tiles
-            // wide; otherwise two overlapping four-tile strips look like a
-            // three-lane road.
-            var visualWidth = proto is HighwaySegmentProto or
-                HighwayOnRampProto or HighwayOffRampProto
-                ? 2.0.Tiles().ToUnityUnits()
-                : proto.LanesSpecs[laneIndex].GetWidth().ToUnityUnits();
-            AppendVisibleLane(
-                builder,
-                proto.LanesTrajectories[laneIndex],
-                visualWidth);
+            // Direct junction arms use a broad central asphalt union so their
+            // turning curves never leave the visible road. The roundabout's
+            // visual list contains each shared physical lane exactly once.
+            var visualWidth =
+                (junction.Kind == HighwayNodeKind.Roundabout ? 2.0 : 8.0)
+                .Tiles()
+                .ToUnityUnits();
+            foreach (var trajectory in junction.VisualRoadTrajectories)
+            {
+                AppendAsphaltSurface(
+                    builder,
+                    trajectory,
+                    visualWidth);
+            }
+        }
+        else
+        {
+            for (var laneIndex = 0;
+                 laneIndex < proto.LanesTrajectories.Length;
+                 laneIndex++)
+            {
+                // The logical MaskAllowAll lane is four tiles wide so every
+                // truck class may use it. Visually a highway lane is only two
+                // tiles wide; otherwise two overlapping four-tile strips look
+                // like a three-lane road.
+                var visualWidth = proto is IHighwayNetworkProto
+                    ? 2.0.Tiles().ToUnityUnits()
+                    : proto.LanesSpecs[laneIndex].GetWidth().ToUnityUnits();
+                AppendVisibleLane(
+                    builder,
+                    proto.LanesTrajectories[laneIndex],
+                    visualWidth);
+            }
         }
 
         builder.UpdateGoAndClear(
@@ -145,6 +170,25 @@ public sealed class GroundRoadModelFactory :
                 surfaceTop,
                 markerTop,
                 EdgeLineColor));
+    }
+
+    private static void AppendAsphaltSurface(
+        MeshBuilder builder,
+        RoadLaneTrajectory trajectory,
+        float width)
+    {
+        var tile = 1.0.Tiles().ToUnityUnits();
+        var surfaceTop = 0.03f * tile;
+        var surfaceBottom = -0.02f * tile;
+        AppendStrip(
+            builder,
+            trajectory,
+            CreateStripCrossSection(
+                width,
+                lateralOffset: 0f,
+                surfaceBottom,
+                surfaceTop,
+                AsphaltColor));
     }
 
     private static void AppendStrip(

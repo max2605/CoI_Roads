@@ -70,6 +70,15 @@ internal static class GroundRoadIds
 
     public static readonly StaticEntityProto.ID HighwayOffRampV3 =
         new("GroundRoads_HighwayOffRampV3");
+
+    public static readonly StaticEntityProto.ID HighwayTIntersection =
+        new("GroundRoads_HighwayTIntersectionV1");
+
+    public static readonly StaticEntityProto.ID HighwayCrossIntersection =
+        new("GroundRoads_HighwayCrossIntersectionV1");
+
+    public static readonly StaticEntityProto.ID HighwayRoundabout =
+        new("GroundRoads_HighwayRoundaboutV1");
 }
 
 public class GroundRoadProto : RoadEntityProto, IRoadConnectionProto
@@ -278,7 +287,9 @@ public class GroundRoadEntranceProto : RoadEntranceEntityProto,
 /// track planning prototypes. The train path finder plans the curve; this
 /// prototype is the actual, saveable road entity created in the world.
 /// </summary>
-public sealed class HighwaySegmentProto : GroundRoadProto
+public sealed class HighwaySegmentProto : GroundRoadProto,
+    IHighwayMainlineProto,
+    IHighwayPortProto
 {
     public TrainTrackProto SourceTrackProto { get; }
 
@@ -288,6 +299,8 @@ public sealed class HighwaySegmentProto : GroundRoadProto
     /// therefore use lane geometry whose handedness was swapped beforehand.
     /// </summary>
     public bool CorrectsReflectedHandedness { get; }
+
+    public bool ParticipatesInHighwayNetwork => true;
 
     public HighwaySegmentProto(
         StaticEntityProto.ID id,
@@ -356,10 +369,48 @@ public sealed class HighwaySegmentProto : GroundRoadProto
             trackTransform.Rotation,
             trackTransform.IsReflected);
     }
+
+    public int HighwayPortCount => 2;
+
+    public HighwayPort GetHighwayPort(int index, TileTransform transform)
+    {
+        if (index == 0)
+        {
+            var center = Layout.TransformPoint_RelToCenterTile(
+                    LanesData[0].StartPosition.Average(
+                        LanesData[1].EndPosition),
+                    transform)
+                .Tile3iRounded;
+            return new HighwayPort(
+                center,
+                GetTransformedStartGraphNode(0, transform),
+                GetTransformedEndGraphNode(1, transform));
+        }
+
+        if (index == 1)
+        {
+            var center = Layout.TransformPoint_RelToCenterTile(
+                    LanesData[0].EndPosition.Average(
+                        LanesData[1].StartPosition),
+                    transform)
+                .Tile3iRounded;
+            return new HighwayPort(
+                center,
+                GetTransformedStartGraphNode(1, transform),
+                GetTransformedEndGraphNode(0, transform));
+        }
+
+        throw new ArgumentOutOfRangeException(nameof(index));
+    }
 }
 
-public sealed class HighwayOnRampProto : GroundRoadEntranceProto
+public sealed class HighwayOnRampProto : GroundRoadEntranceProto,
+    IHighwayNetworkProto
 {
+    // Compatibility-only prototype: hidden from the toolbar and deliberately
+    // excluded from all new highway routes.
+    public bool ParticipatesInHighwayNetwork => false;
+
     public HighwayOnRampProto(
         StaticEntityProto.ID id,
         Proto.Str strings,
@@ -382,8 +433,13 @@ public sealed class HighwayOnRampProto : GroundRoadEntranceProto
     }
 }
 
-public sealed class HighwayOffRampProto : GroundRoadEntranceProto
+public sealed class HighwayOffRampProto : GroundRoadEntranceProto,
+    IHighwayNetworkProto
 {
+    // Compatibility-only prototype: hidden from the toolbar and deliberately
+    // excluded from all new highway routes.
+    public bool ParticipatesInHighwayNetwork => false;
+
     public HighwayOffRampProto(
         StaticEntityProto.ID id,
         Proto.Str strings,
@@ -869,11 +925,9 @@ internal static class GroundRoadsData
             isOnRamp: false,
             ImmutableArray<ToolbarEntryData>.Empty);
 
-        // V2 stays registered under its original IDs so existing saves can
-        // still be opened. V3 is the player-facing implementation: every
-        // prototype owns one exact train-graph heading and is translated
-        // only. This prevents a visual rotation/reflection from silently
-        // reversing the directed road edge.
+        // V2 and V3 stay registered under their original IDs so existing
+        // saves can still be opened. They remain hidden and excluded from the
+        // active highway graph.
         RegisterHighwayRamp(
             registrator,
             GroundRoadIds.HighwayOnRampV3,
@@ -895,11 +949,16 @@ internal static class GroundRoadsData
             hasFixedWorldDirection: true);
 
         RegisterHighwaySegmentsFromTrainPlanner(registrator);
+        HighwayNetworkData.Register(
+            registrator,
+            roadsCategory,
+            s_maxRoadVehicleSpeedPerTick);
 
         Log.Info(
             "GroundRoads: registered the train-planned highway library and " +
-            "automatic traffic-director access. Ramp prototype IDs remain " +
-            "hidden for save compatibility. Road speed cap is " +
+            "automatic traffic-director access. T/+ intersections and the " +
+            "roundabout are available. Historical ramp IDs remain hidden " +
+            "for save compatibility. Road speed cap is " +
             $"{s_maxRoadVehicleSpeedPerTick} per tick.");
     }
 

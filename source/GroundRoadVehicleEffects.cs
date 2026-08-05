@@ -187,7 +187,8 @@ public sealed class GroundRoadVehicleEffects : IDisposable
         Log.Info(
             "GroundRoads: vehicle effects active on native Ground Road " +
             "entities (direct driver speed 140%, maintenance 50%, " +
-            "highway lane projection enabled).");
+            "lane projection enabled on highway segments; junctions use " +
+            "native steering).");
     }
 
     public void Dispose()
@@ -315,7 +316,7 @@ public sealed class GroundRoadVehicleEffects : IDisposable
 
             TrackVehicleCreatedDuringBoostWindow(vehicle);
             var isOnGroundRoad = IsOnGroundRoad(vehicle);
-            if (IsOnHighway(vehicle))
+            if (ShouldProjectToHighwayLane(vehicle))
             {
                 SnapToCurrentHighwayLane(vehicle);
             }
@@ -541,7 +542,8 @@ public sealed class GroundRoadVehicleEffects : IDisposable
         if (vehicle.IsDrivingOnRoad && vehicle.CurrentRoadEntity.HasValue)
         {
             var roadProto = vehicle.CurrentRoadEntity.Value.RoadProto;
-            if (roadProto is GroundRoadProto ||
+            if (roadProto is IHighwayNetworkProto ||
+                roadProto is GroundRoadProto ||
                 roadProto is GroundRoadEntranceProto ||
                 roadProto is GroundRoadAccessibleSegmentProto)
             {
@@ -552,11 +554,21 @@ public sealed class GroundRoadVehicleEffects : IDisposable
         return false;
     }
 
-    private static bool IsOnHighway(Vehicle vehicle)
+    private static bool ShouldProjectToHighwayLane(Vehicle vehicle)
     {
         return vehicle.IsDrivingOnRoad &&
             vehicle.CurrentRoadEntity.HasValue &&
-            vehicle.CurrentRoadEntity.Value.RoadProto is HighwaySegmentProto;
+            RequiresLaneProjection(
+                vehicle.CurrentRoadEntity.Value.RoadProto);
+    }
+
+    private static bool RequiresLaneProjection(
+        IRoadGraphEntityProto roadProto)
+    {
+        // The custom correction is needed only on the long train-planned
+        // highway curves. Junctions have short, tightly connected turns and
+        // must retain the game's native steering across entity boundaries.
+        return roadProto is HighwaySegmentProto;
     }
 
     private static void SnapToCurrentHighwayLane(Vehicle vehicle)

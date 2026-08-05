@@ -1,5 +1,7 @@
 /source/bin/
 /source/obj/
+/tests/**/bin/
+/tests/**/obj/
 /GroundRoads.dll
 /.vs/
 *.suo
