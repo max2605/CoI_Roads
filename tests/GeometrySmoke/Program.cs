@@ -10,9 +10,11 @@ using Mafi.Core;
 using Mafi.Core.Entities.Static;
 using Mafi.Core.Entities.Static.Layout;
 using Mafi.Core.Entities.Validators;
+using Mafi.Core.PathFinding;
 using Mafi.Core.Prototypes;
 using Mafi.Core.Roads;
 using Mafi.Core.Trains;
+using Mafi.Curves;
 
 namespace GroundRoads.GeometrySmoke;
 
@@ -87,13 +89,20 @@ internal static class Program
             CheckLaneProjectionScope(assembly);
             CheckJunctionSnapPolicy(assembly);
             CheckJunctionSpacingPolicy(assembly);
+            CheckElevationRampSupport(assembly);
 
             Console.WriteLine(
                 "Geometry smoke checks passed: 4 variants each; " +
                 "T=6, +=12, roundabout=12 shared lanes, 16 headings with " +
                 "exact port mates, external-only terrain access, buffered " +
                 "junction placement with a 24-tile exclusion zone, native " +
-                "junction steering, no ramp tools.");
+                "junction steering, no legacy ramp tools, reversible height " +
+                "curves, normalized terrain ramps, grade-independent " +
+                "heading selection, 16 flat-end retries, four-tile terrain " +
+                "and entity-corridor clearance, geometric existing-highway " +
+                "collision checks, exact two-sided bilinear terrain support, " +
+                "no floating G4/G8 roads, selected open-port seams, and " +
+                "half-tile terrain access.");
             return 0;
         }
         catch (Exception error)
@@ -626,6 +635,1099 @@ internal static class Program
         Require(!rejects(17, 17),
             "Rotationally equivalent distances outside the buffer must be " +
             "allowed.");
+    }
+
+    private static void CheckElevationRampSupport(Assembly assembly)
+    {
+        var roadsData = assembly.GetType(
+            "GroundRoads.GroundRoadsData",
+            throwOnError: true);
+        var dragController = assembly.GetType(
+            "GroundRoads.GroundRoadDragController",
+            throwOnError: true);
+        var trafficDirector = assembly.GetType(
+            "GroundRoads.HighwayTrafficDirector",
+            throwOnError: true);
+
+        var reverseHeightCurve = GetPrivateStaticMethod(
+            roadsData,
+            "ReverseHeightCurve",
+            typeof(CubicBezierCurve2f));
+        var getExactDirection = GetPrivateStaticMethod(
+            roadsData,
+            "GetExactDirection",
+            typeof(TrainTrackNodeDirection));
+        var createLaneTrajectories = GetPrivateStaticMethod(
+            roadsData,
+            "CreateHighwayLaneTrajectories",
+            typeof(TrainTrackSegmentsRel),
+            typeof(RoadLaneTrajectory).MakeByRefType(),
+            typeof(RoadLaneTrajectory).MakeByRefType());
+        var getDirectionIndex = GetPrivateStaticMethod(
+            dragController,
+            "GetDirectionIndex",
+            typeof(TrainTrackNodeDirection));
+        var createPathFinderFlags = GetPrivateStaticMethod(
+            dragController,
+            "CreateHighwayPathFinderFlags");
+        var tryCreateFlatDirection = GetPrivateStaticMethod(
+            dragController,
+            "TryCreateFlatDirection",
+            typeof(TrainTrackNodeDirection),
+            typeof(TrainTrackNodeDirection).MakeByRefType());
+        var getFlatEndDirectionRetryIndex = GetPrivateStaticMethod(
+            dragController,
+            "GetFlatEndDirectionRetryIndex",
+            typeof(int),
+            typeof(int));
+        var canRetryFlatEndDirection = GetPrivateStaticMethod(
+            dragController,
+            "CanRetryFlatEndDirection",
+            typeof(bool),
+            typeof(int));
+        var canInitializeFlatEndDirectionRetries = GetPrivateStaticMethod(
+            dragController,
+            "CanInitializeFlatEndDirectionRetries",
+            typeof(bool),
+            typeof(int),
+            typeof(bool));
+        var isTerrainRoadHeightDifferenceWithinTolerance =
+            GetPrivateStaticMethod(
+            dragController,
+            "IsTerrainRoadHeightDifferenceWithinTolerance",
+            typeof(double));
+        var isWithinAttachmentCollisionSeam = GetPrivateStaticMethod(
+            dragController,
+            "IsWithinAttachmentCollisionSeam",
+            typeof(Tile2i),
+            typeof(Tile2i));
+        var doRoadSurfaceLinesOverlap = GetPrivateStaticMethod(
+            dragController,
+            "DoRoadSurfaceLinesOverlap",
+            typeof(Tile3f),
+            typeof(Tile3f),
+            typeof(Tile3f),
+            typeof(Tile3f));
+        var doesBilinearTerrainCellMatchRoadTriangle = GetPrivateStaticMethod(
+            dragController,
+            "DoesBilinearTerrainCellMatchRoadTriangle",
+            typeof(Tile3f),
+            typeof(Tile3f),
+            typeof(Tile3f),
+            typeof(Tile2i),
+            typeof(HeightTilesF),
+            typeof(HeightTilesF),
+            typeof(HeightTilesF),
+            typeof(HeightTilesF));
+        var createRoadSurfaceStripTriangles = GetPrivateStaticMethod(
+            dragController,
+            "CreateRoadSurfaceStripTriangles",
+            typeof(Tile3f),
+            typeof(Tile3f),
+            typeof(RelTile3f),
+            typeof(RelTile3f),
+            typeof(bool));
+        var canUseAttachmentException = GetPrivateStaticMethod(
+            dragController,
+            "CanUseAttachmentException",
+            typeof(bool),
+            typeof(bool),
+            typeof(bool),
+            typeof(bool));
+        var isTerrainHeightReachable = GetPrivateStaticMethod(
+            trafficDirector,
+            "IsTerrainHeightReachable",
+            typeof(HeightTilesF),
+            typeof(HeightTilesF));
+        var areTerrainAccessHeightsReachable = GetPrivateStaticMethod(
+            trafficDirector,
+            "AreTerrainAccessHeightsReachable",
+            typeof(HeightTilesF),
+            typeof(HeightTilesF),
+            typeof(HeightTilesF));
+
+        CheckHeightCurveReversal(reverseHeightCurve);
+        CheckExactGradeDirections(getExactDirection);
+        CheckDirectionIndexIgnoresGrade(getDirectionIndex);
+        CheckElevationPathFinderFlags(createPathFinderFlags);
+        CheckFlatEndDirections(
+            tryCreateFlatDirection,
+            getFlatEndDirectionRetryIndex,
+            canRetryFlatEndDirection,
+            canInitializeFlatEndDirectionRetries);
+        CheckRoadSurfaceTerrainClearance(
+            isTerrainRoadHeightDifferenceWithinTolerance,
+            getExactDirection,
+            isWithinAttachmentCollisionSeam,
+            doRoadSurfaceLinesOverlap,
+            doesBilinearTerrainCellMatchRoadTriangle,
+            createRoadSurfaceStripTriangles,
+            canUseAttachmentException);
+        CheckElevationLaneTrajectories(
+            createLaneTrajectories,
+            getExactDirection);
+        CheckTerrainHeightTolerance(
+            isTerrainHeightReachable,
+            areTerrainAccessHeightsReachable);
+        CheckInclinedTerrainAccessIsRejected(trafficDirector);
+    }
+
+    private static void CheckHeightCurveReversal(MethodInfo reverse)
+    {
+        var source = new CubicBezierCurve2f(
+            ImmutableArray.Create(
+                new Vector2f(2, -4),
+                new Vector2f(3, -1),
+                new Vector2f(6, 3),
+                new Vector2f(10, 7)));
+        var reversed = (CubicBezierCurve2f)reverse.Invoke(
+            null,
+            new object[] { source });
+        var restored = (CubicBezierCurve2f)reverse.Invoke(
+            null,
+            new object[] { reversed });
+
+        RequireStrictlyIncreasingCurveX(
+            source,
+            "Source height curve");
+        RequireStrictlyIncreasingCurveX(
+            reversed,
+            "Reversed height curve");
+        Require(reversed.ControlPoints.First.Y ==
+                source.ControlPoints.Last.Y &&
+                reversed.ControlPoints.Last.Y ==
+                source.ControlPoints.First.Y,
+            "Reversing a height curve must exchange its endpoint heights.");
+
+        Require(restored.ControlPoints.Length ==
+                source.ControlPoints.Length,
+            "Reversing a height curve twice changed its control-point count.");
+        for (var index = 0;
+             index < source.ControlPoints.Length;
+             index++)
+        {
+            Require(restored.ControlPoints[index] ==
+                    source.ControlPoints[index],
+                $"Height-curve reversal is not involutive at control point " +
+                $"{index}.");
+        }
+    }
+
+    private static void RequireStrictlyIncreasingCurveX(
+        CubicBezierCurve2f curve,
+        string description)
+    {
+        for (var index = 1;
+             index < curve.ControlPoints.Length;
+             index++)
+        {
+            Require(curve.ControlPoints[index - 1].X <
+                    curve.ControlPoints[index].X,
+                $"{description} must remain strictly increasing in X.");
+        }
+    }
+
+    private static void CheckExactGradeDirections(MethodInfo getExactDirection)
+    {
+        var ascending = CreateTrackDirection(
+            90.0,
+            TrainTrackGradeFactor.G8);
+        var descending = CreateTrackDirection(
+            90.0,
+            TrainTrackGradeFactor.GMinus8);
+        var ascendingVector = (RelTile3f)getExactDirection.Invoke(
+            null,
+            new object[] { ascending });
+        var descendingVector = (RelTile3f)getExactDirection.Invoke(
+            null,
+            new object[] { descending });
+
+        Require(ascendingVector.Z.IsPositive,
+            "G8 exact directions must point upward in Z.");
+        Require(descendingVector.Z.IsNegative,
+            "GMinus8 exact directions must point downward in Z.");
+        Require(ascendingVector.IsNormalized &&
+                descendingVector.IsNormalized,
+            "Exact graded directions must be normalized in three dimensions.");
+        Require(ascendingVector.Xy == descendingVector.Xy &&
+                ascendingVector.Z == -descendingVector.Z,
+            "G8 and GMinus8 must differ only in their Z sign.");
+    }
+
+    private static void CheckDirectionIndexIgnoresGrade(MethodInfo getIndex)
+    {
+        var flat = CreateTrackDirection(
+            90.0,
+            TrainTrackGradeFactor.G0);
+        var ascending = CreateTrackDirection(
+            90.0,
+            TrainTrackGradeFactor.G8);
+        var descending = CreateTrackDirection(
+            90.0,
+            TrainTrackGradeFactor.GMinus8);
+        var flatIndex = (int)getIndex.Invoke(null, new object[] { flat });
+        var ascendingIndex = (int)getIndex.Invoke(
+            null,
+            new object[] { ascending });
+        var descendingIndex = (int)getIndex.Invoke(
+            null,
+            new object[] { descending });
+
+        Require(flatIndex == 4,
+            "A 90-degree heading must map to direction index 4.");
+        Require(ascendingIndex == flatIndex &&
+                descendingIndex == flatIndex,
+            "Direction-index selection must ignore the track grade.");
+    }
+
+    private static void CheckElevationPathFinderFlags(MethodInfo createFlags)
+    {
+        var flags = (TrainTrackPathFinderFlags)createFlags.Invoke(
+            null,
+            Array.Empty<object>());
+
+        Require((flags & TrainTrackPathFinderFlags.GoalMustBeFlat) != 0,
+            "Terrain ramps must still end on a flat planner seam.");
+        Require((flags & TrainTrackPathFinderFlags.DisallowG4) == 0,
+            "G4 terrain ramps must be available to the planner.");
+        Require((flags & TrainTrackPathFinderFlags.DisallowG8) == 0,
+            "G8 terrain ramps must be available to the planner.");
+    }
+
+    private static void CheckFlatEndDirections(
+        MethodInfo tryCreate,
+        MethodInfo getRetryIndex,
+        MethodInfo canRetry,
+        MethodInfo canInitialize)
+    {
+        var source = CreateTrackDirection(
+            112.5,
+            TrainTrackGradeFactor.GMinus4);
+        var arguments = new object[] { source, default(TrainTrackNodeDirection) };
+        Require((bool)tryCreate.Invoke(null, arguments),
+            "A graded endpoint direction must be convertible to G0.");
+        var flat = (TrainTrackNodeDirection)arguments[1];
+        Require(flat.Direction == source.Direction &&
+                flat.GradeFactor == TrainTrackGradeFactor.G0,
+            "Flat endpoint fallback must preserve XY heading and force G0.");
+
+        var covered = new HashSet<int>();
+        for (var attempt = 0; attempt < 16; attempt++)
+        {
+            covered.Add((int)getRetryIndex.Invoke(
+                null,
+                new object[] { 5, attempt }));
+        }
+
+        Require(covered.Count == 16 && covered.All(x => x >= 0 && x < 16),
+            "Flat endpoint retries must cover all 16 planner headings.");
+        Require((int)getRetryIndex.Invoke(null, new object[] { 5, 0 }) == 5 &&
+                (int)getRetryIndex.Invoke(null, new object[] { 5, 1 }) == 6 &&
+                (int)getRetryIndex.Invoke(null, new object[] { 5, 2 }) == 4,
+            "Flat endpoint retries must start with the closest headings.");
+
+        bool retry(bool hasExplicitDirection, int attempts) =>
+            (bool)canRetry.Invoke(
+                null,
+                new object[] { hasExplicitDirection, attempts });
+        Require(retry(false, 1) && retry(false, 15),
+            "Blocked free endpoints must try their remaining flat " +
+            "directions.");
+        Require(!retry(false, 0) && !retry(false, 16) && retry(true, 1) == false,
+            "Flat endpoint retries must not run before initialization, " +
+            "after exhaustion, or for an explicit snapped direction.");
+
+        bool initialize(
+            bool hasExplicitDirection,
+            int attempts,
+            bool hasGoalDelta) =>
+            (bool)canInitialize.Invoke(
+                null,
+                new object[]
+                {
+                    hasExplicitDirection,
+                    attempts,
+                    hasGoalDelta
+                });
+        Require(initialize(false, 0, true),
+            "An unresolved unrestricted search must initialize the flat " +
+            "direction cycle from its direct goal heading.");
+        Require(!initialize(true, 0, true) &&
+                !initialize(false, 1, true) &&
+                !initialize(false, 0, false),
+            "Flat direction initialization must reject explicit goals, " +
+            "active cycles, and zero-length goals.");
+    }
+
+    private static void CheckRoadSurfaceTerrainClearance(
+        MethodInfo isDifferenceWithinTolerance,
+        MethodInfo getExactDirection,
+        MethodInfo isWithinAttachmentSeam,
+        MethodInfo doSurfaceLinesOverlap,
+        MethodInfo doesBilinearTerrainCellMatchRoadTriangle,
+        MethodInfo createRoadSurfaceStripTriangles,
+        MethodInfo canUseAttachmentException)
+    {
+        var tolerance = TrainTrackConstants.GROUND_TOLERANCE.Value
+            .ToDouble();
+        var outsideTolerance = tolerance + 0.01;
+        bool differenceMatches(double difference) =>
+            (bool)isDifferenceWithinTolerance.Invoke(
+                null,
+                new object[] { difference });
+
+        Require(differenceMatches(0.0) &&
+                differenceMatches(tolerance) &&
+                differenceMatches(-tolerance),
+            "Road surfaces must accept terrain within the native ground " +
+            "tolerance on both sides.");
+        Require(!differenceMatches(outsideTolerance) &&
+                !differenceMatches(-outsideTolerance),
+            "Terrain beyond the native tolerance must be rejected both " +
+            "above and below the road; terrain ramps are not bridges.");
+
+        bool allowedAt(int x, int y) =>
+            (bool)isWithinAttachmentSeam.Invoke(
+                null,
+                new object[] { new Tile2i(x, y), Tile2i.Zero });
+        Require(allowedAt(2, 2) && allowedAt(-2, -2),
+            "Exact attachment entities must be allowed across the full " +
+            "four-tile seam width.");
+        Require(!allowedAt(3, 0) && !allowedAt(0, -3),
+            "Attachment exceptions must not leak beyond the endpoint seam.");
+
+        bool attachmentException(
+            bool endpoint,
+            bool open,
+            bool selected,
+            bool exactMate) =>
+            (bool)canUseAttachmentException.Invoke(
+                null,
+                new object[] { endpoint, open, selected, exactMate });
+        Require(attachmentException(true, true, true, true),
+            "A selected open exact-mate endpoint must retain its seam " +
+            "exception.");
+        Require(!attachmentException(false, true, true, true) &&
+                !attachmentException(true, false, true, true) &&
+                !attachmentException(true, true, false, true) &&
+                !attachmentException(true, true, true, false),
+            "Closed, unselected, non-mating, or non-endpoint ports must " +
+            "never receive a collision exception.");
+
+        HeightTilesF height(double value) =>
+            new(Fix32.FromDouble(value));
+        Tile3f point(double x, double y, double z) =>
+            new(
+                Fix32.FromDouble(x),
+                Fix32.FromDouble(y),
+                Fix32.FromDouble(z));
+        bool terrainTriangleMatches(
+            Tile3f first,
+            Tile3f second,
+            Tile3f third,
+            Tile2i cell,
+            HeightTilesF bottomLeft,
+            HeightTilesF bottomRight,
+            HeightTilesF topLeft,
+            HeightTilesF topRight) =>
+            (bool)doesBilinearTerrainCellMatchRoadTriangle.Invoke(
+                null,
+                new object[]
+                {
+                    first,
+                    second,
+                    third,
+                    cell,
+                    bottomLeft,
+                    bottomRight,
+                    topLeft,
+                    topRight
+                });
+        bool bothWindingsMatch(
+            Tile3f first,
+            Tile3f second,
+            Tile3f third,
+            Tile2i cell,
+            HeightTilesF bottomLeft,
+            HeightTilesF bottomRight,
+            HeightTilesF topLeft,
+            HeightTilesF topRight) =>
+            terrainTriangleMatches(
+                first,
+                second,
+                third,
+                cell,
+                bottomLeft,
+                bottomRight,
+                topLeft,
+                topRight) &&
+            terrainTriangleMatches(
+                first,
+                third,
+                second,
+                cell,
+                bottomLeft,
+                bottomRight,
+                topLeft,
+                topRight);
+        bool neitherWindingMatches(
+            Tile3f first,
+            Tile3f second,
+            Tile3f third,
+            Tile2i cell,
+            HeightTilesF bottomLeft,
+            HeightTilesF bottomRight,
+            HeightTilesF topLeft,
+            HeightTilesF topRight) =>
+            !terrainTriangleMatches(
+                first,
+                second,
+                third,
+                cell,
+                bottomLeft,
+                bottomRight,
+                topLeft,
+                topRight) &&
+            !terrainTriangleMatches(
+                first,
+                third,
+                second,
+                cell,
+                bottomLeft,
+                bottomRight,
+                topLeft,
+                topRight);
+
+        var flatFirst = point(0.0, 0.0, 1.0);
+        var flatSecond = point(2.0, 0.0, 1.0);
+        var flatThird = point(0.0, 2.0, 1.0);
+        Require(bothWindingsMatch(
+                flatFirst,
+                flatSecond,
+                flatThird,
+                Tile2i.Zero,
+                HeightTilesF.One,
+                HeightTilesF.One,
+                HeightTilesF.One,
+                HeightTilesF.One),
+            "A flat road exactly supported by flat terrain must remain " +
+            "valid in both triangle windings.");
+        Require(bothWindingsMatch(
+                flatFirst,
+                flatSecond,
+                flatThird,
+                Tile2i.Zero,
+                height(1.0 + tolerance),
+                height(1.0 + tolerance),
+                height(1.0 + tolerance),
+                height(1.0 + tolerance)) &&
+                bothWindingsMatch(
+                    flatFirst,
+                    flatSecond,
+                    flatThird,
+                    Tile2i.Zero,
+                    height(1.0 - tolerance),
+                    height(1.0 - tolerance),
+                    height(1.0 - tolerance),
+                    height(1.0 - tolerance)),
+            "Triangle terrain support must accept the native tolerance " +
+            "symmetrically above and below the road.");
+        Require(neitherWindingMatches(
+                flatFirst,
+                flatSecond,
+                flatThird,
+                Tile2i.Zero,
+                height(1.0 + outsideTolerance),
+                height(1.0 + outsideTolerance),
+                height(1.0 + outsideTolerance),
+                height(1.0 + outsideTolerance)) &&
+                neitherWindingMatches(
+                    flatFirst,
+                    flatSecond,
+                    flatThird,
+                    Tile2i.Zero,
+                    height(1.0 - outsideTolerance),
+                    height(1.0 - outsideTolerance),
+                    height(1.0 - outsideTolerance),
+                    height(1.0 - outsideTolerance)),
+            "Triangle terrain support must reject gaps beyond the native " +
+            "tolerance on either side.");
+        Require(neitherWindingMatches(
+                flatFirst,
+                flatSecond,
+                flatThird,
+                Tile2i.Zero,
+                HeightTilesF.Zero,
+                HeightTilesF.Zero,
+                HeightTilesF.Zero,
+                HeightTilesF.Zero),
+            "A flat road floating above constant terrain must be rejected " +
+            "in both triangle windings.");
+
+        var g4First = point(0.0, 0.0, 0.0);
+        var g4Second = point(4.0, 0.0, 1.0);
+        var g4Third = point(0.0, 2.0, 0.0);
+        Require(bothWindingsMatch(
+                g4First,
+                g4Second,
+                g4Third,
+                Tile2i.Zero,
+                HeightTilesF.Zero,
+                height(0.25),
+                HeightTilesF.Zero,
+                height(0.25)),
+            "A terrain cell matching a G4 road plane must remain valid in " +
+            "both triangle windings.");
+        Require(neitherWindingMatches(
+                point(0.0, 0.0, 1.0),
+                point(4.0, 0.0, 2.0),
+                point(0.0, 2.0, 1.0),
+                Tile2i.Zero,
+                HeightTilesF.Zero,
+                height(0.25),
+                HeightTilesF.Zero,
+                height(0.25)),
+            "A G4 road floating one tile above matching terrain must be " +
+            "rejected in both triangle windings.");
+
+        var g8First = point(0.0, 0.0, 0.0);
+        var g8Second = point(8.0, 0.0, 1.0);
+        var g8Third = point(0.0, 2.0, 0.0);
+        Require(bothWindingsMatch(
+                g8First,
+                g8Second,
+                g8Third,
+                Tile2i.Zero,
+                HeightTilesF.Zero,
+                height(0.125),
+                HeightTilesF.Zero,
+                height(0.125)),
+            "A terrain cell matching a G8 road plane must remain valid in " +
+            "both triangle windings.");
+        Require(neitherWindingMatches(
+                point(0.0, 0.0, 1.0),
+                point(8.0, 0.0, 2.0),
+                point(0.0, 2.0, 1.0),
+                Tile2i.Zero,
+                HeightTilesF.Zero,
+                height(0.125),
+                HeightTilesF.Zero,
+                height(0.125)),
+            "A G8 road floating one tile above matching terrain must be " +
+            "rejected in both triangle windings.");
+
+        var unitFirst = point(0.0, 0.0, 0.0);
+        var unitSecond = point(0.0, 1.0, 0.0);
+        var unitThird = point(1.0, 0.0, 0.0);
+        Require(bothWindingsMatch(
+                unitFirst,
+                unitSecond,
+                unitThird,
+                Tile2i.Zero,
+                HeightTilesF.Zero,
+                HeightTilesF.Zero,
+                HeightTilesF.Zero,
+                height(3.0 * tolerance)),
+            "An h11 corner at three tolerances must stay valid because " +
+            "the bilinear peak inside the unit triangle is only 3T/4.");
+        Require(neitherWindingMatches(
+                unitFirst,
+                unitSecond,
+                unitThird,
+                Tile2i.Zero,
+                HeightTilesF.Zero,
+                HeightTilesF.Zero,
+                HeightTilesF.Zero,
+                height(5.0 * tolerance)),
+            "An h11 corner at five tolerances must be rejected because " +
+            "its off-corner bilinear peak inside the triangle exceeds T.");
+
+        var baseHeight = 2.0;
+        var lowerFirst = point(1.0, 0.0, baseHeight);
+        var lowerSecond = point(0.0, 1.0, baseHeight);
+        var lowerThird = point(
+            1.0,
+            1.0,
+            baseHeight - tolerance / 2.0);
+        var lowerTerrain = new[]
+        {
+            height(baseHeight - tolerance),
+            height(baseHeight - tolerance + 17.0 * tolerance / 32.0),
+            height(baseHeight - tolerance + tolerance / 32.0),
+            height(baseHeight - tolerance - 7.0 * tolerance / 16.0)
+        };
+        Require(neitherWindingMatches(
+                lowerFirst,
+                lowerSecond,
+                lowerThird,
+                Tile2i.Zero,
+                lowerTerrain[0],
+                lowerTerrain[1],
+                lowerTerrain[2],
+                lowerTerrain[3]),
+            "A convex bilinear minimum that creates an off-centre air gap " +
+            "must be rejected in both triangle windings.");
+
+        var upperFirst = point(1.0, 0.0, baseHeight);
+        var upperSecond = point(0.0, 1.0, baseHeight);
+        var upperThird = point(
+            1.0,
+            1.0,
+            baseHeight + tolerance / 2.0);
+        var upperTerrain = new[]
+        {
+            height(baseHeight + tolerance),
+            height(baseHeight + tolerance - 17.0 * tolerance / 32.0),
+            height(baseHeight + tolerance - tolerance / 32.0),
+            height(baseHeight + tolerance + 7.0 * tolerance / 16.0)
+        };
+        Require(neitherWindingMatches(
+                upperFirst,
+                upperSecond,
+                upperThird,
+                Tile2i.Zero,
+                upperTerrain[0],
+                upperTerrain[1],
+                upperTerrain[2],
+                upperTerrain[3]),
+            "A concave bilinear maximum that clips an off-centre road " +
+            "point must be rejected in both triangle windings.");
+
+        var tangentTerrain = height(100.0);
+        Require(bothWindingsMatch(
+                unitFirst,
+                unitSecond,
+                unitThird,
+                new Tile2i(1, 0),
+                tangentTerrain,
+                tangentTerrain,
+                tangentTerrain,
+                tangentTerrain),
+            "A zero-area point tangency to a neighboring terrain cell " +
+            "must not reject the road triangle.");
+
+        var seamFirst = point(0.0, -1.0, 0.0);
+        var seamSecond = point(4.0, -1.0, 1.0);
+        var seamThird = point(4.0, 1.0, 1.0);
+        var continuationFirst = point(4.0, -1.0, 1.0);
+        var continuationSecond = point(8.0, -1.0, 2.0);
+        var continuationThird = point(4.0, 1.0, 1.0);
+        Require(bothWindingsMatch(
+                seamFirst,
+                seamSecond,
+                seamThird,
+                new Tile2i(4, 0),
+                HeightTilesF.One,
+                height(1.25),
+                HeightTilesF.One,
+                height(1.25)) &&
+                bothWindingsMatch(
+                    continuationFirst,
+                    continuationSecond,
+                    continuationThird,
+                    new Tile2i(4, 0),
+                    HeightTilesF.One,
+                    height(1.25),
+                    HeightTilesF.One,
+                    height(1.25)),
+            "An internal G4 seam must ignore the preceding triangle's " +
+            "zero-area cell tangency while validating its continuation.");
+
+        var inclinedDirection = (RelTile3f)getExactDirection.Invoke(
+            null,
+            new object[]
+            {
+                CreateTrackDirection(0.0, TrainTrackGradeFactor.G4)
+            });
+        var stripStart = point(2.0, 3.0, 4.0);
+        var stripEnd = point(6.0, 3.0, 5.0);
+        var strip = createRoadSurfaceStripTriangles.Invoke(
+            null,
+            new object[]
+            {
+                stripStart,
+                stripEnd,
+                inclinedDirection,
+                inclinedDirection,
+                false
+            });
+        (double X, double Y, double Z) stripVertex(
+            object stripResult,
+            int index)
+        {
+            var item = stripResult.GetType().GetField(
+                $"Item{index}",
+                BindingFlags.Instance | BindingFlags.Public);
+            Require(item != null,
+                $"Road surface strip tuple is missing Item{index}.");
+            var vertex = item.GetValue(stripResult);
+            var vertexType = vertex.GetType();
+            return (
+                (double)vertexType.GetField("X").GetValue(vertex),
+                (double)vertexType.GetField("Y").GetValue(vertex),
+                (double)vertexType.GetField("Z").GetValue(vertex));
+        }
+
+        bool sameVertex(
+            (double X, double Y, double Z) first,
+            (double X, double Y, double Z) second) =>
+            Math.Abs(first.X - second.X) < 1e-9 &&
+            Math.Abs(first.Y - second.Y) < 1e-9 &&
+            Math.Abs(first.Z - second.Z) < 1e-9;
+        var firstTriangleFirst = stripVertex(strip, 1);
+        var firstTriangleSecond = stripVertex(strip, 2);
+        var firstTriangleThird = stripVertex(strip, 3);
+        var secondTriangleFirst = stripVertex(strip, 4);
+        var secondTriangleSecond = stripVertex(strip, 5);
+        var secondTriangleThird = stripVertex(strip, 6);
+        var lateral = inclinedDirection.Normalized.Xy
+            .RightOrthogonalVector;
+        var expectedStartRight = (
+            stripStart.X.ToDouble() + lateral.X.ToDouble(),
+            stripStart.Y.ToDouble() + lateral.Y.ToDouble(),
+            stripStart.Z.ToDouble());
+        var expectedStartLeft = (
+            stripStart.X.ToDouble() - lateral.X.ToDouble(),
+            stripStart.Y.ToDouble() - lateral.Y.ToDouble(),
+            stripStart.Z.ToDouble());
+        var expectedEndLeft = (
+            stripEnd.X.ToDouble() - lateral.X.ToDouble(),
+            stripEnd.Y.ToDouble() - lateral.Y.ToDouble(),
+            stripEnd.Z.ToDouble());
+        var expectedEndRight = (
+            stripEnd.X.ToDouble() + lateral.X.ToDouble(),
+            stripEnd.Y.ToDouble() + lateral.Y.ToDouble(),
+            stripEnd.Z.ToDouble());
+        Require(sameVertex(firstTriangleFirst, expectedStartRight) &&
+                sameVertex(firstTriangleSecond, expectedEndLeft) &&
+                sameVertex(firstTriangleThird, expectedEndRight) &&
+                sameVertex(secondTriangleFirst, expectedEndLeft) &&
+                sameVertex(secondTriangleSecond, expectedStartRight) &&
+                sameVertex(secondTriangleThird, expectedStartLeft),
+            "Road strip triangles must mirror MeshBuilder's shared " +
+            "startRight-to-endLeft diagonal and winding exactly.");
+        var projectedWidth = Math.Sqrt(
+            Math.Pow(firstTriangleFirst.X - secondTriangleThird.X, 2.0) +
+            Math.Pow(firstTriangleFirst.Y - secondTriangleThird.Y, 2.0));
+        var expectedProjectedWidth = 2.0 * Math.Sqrt(
+            Math.Pow(lateral.X.ToDouble(), 2.0) +
+            Math.Pow(lateral.Y.ToDouble(), 2.0));
+        Require(Math.Abs(projectedWidth - expectedProjectedWidth) < 1e-9 &&
+                projectedWidth < 2.0 - 1e-6,
+            "Inclined road strips must retain MeshBuilder's projected XY " +
+            "width instead of renormalizing the lateral vector.");
+
+        var curvedEndDirection = (RelTile3f)getExactDirection.Invoke(
+            null,
+            new object[]
+            {
+                CreateTrackDirection(22.5, TrainTrackGradeFactor.G8)
+            });
+        var reflectedStrip = createRoadSurfaceStripTriangles.Invoke(
+            null,
+            new object[]
+            {
+                stripStart,
+                stripEnd,
+                inclinedDirection,
+                curvedEndDirection,
+                true
+            });
+        var reflectedStartLateral = inclinedDirection.Normalized.Xy
+            .RightOrthogonalVector;
+        var reflectedEndLateral = curvedEndDirection.Normalized.Xy
+            .RightOrthogonalVector;
+        var reflectedStartRight = (
+            stripStart.X.ToDouble() -
+                reflectedStartLateral.X.ToDouble(),
+            stripStart.Y.ToDouble() -
+                reflectedStartLateral.Y.ToDouble(),
+            stripStart.Z.ToDouble());
+        var reflectedStartLeft = (
+            stripStart.X.ToDouble() +
+                reflectedStartLateral.X.ToDouble(),
+            stripStart.Y.ToDouble() +
+                reflectedStartLateral.Y.ToDouble(),
+            stripStart.Z.ToDouble());
+        var reflectedEndLeft = (
+            stripEnd.X.ToDouble() + reflectedEndLateral.X.ToDouble(),
+            stripEnd.Y.ToDouble() + reflectedEndLateral.Y.ToDouble(),
+            stripEnd.Z.ToDouble());
+        var reflectedEndRight = (
+            stripEnd.X.ToDouble() - reflectedEndLateral.X.ToDouble(),
+            stripEnd.Y.ToDouble() - reflectedEndLateral.Y.ToDouble(),
+            stripEnd.Z.ToDouble());
+        Require(
+            sameVertex(
+                stripVertex(reflectedStrip, 1),
+                reflectedStartRight) &&
+            sameVertex(
+                stripVertex(reflectedStrip, 2),
+                reflectedEndLeft) &&
+            sameVertex(
+                stripVertex(reflectedStrip, 3),
+                reflectedEndRight) &&
+            sameVertex(
+                stripVertex(reflectedStrip, 4),
+                reflectedEndLeft) &&
+            sameVertex(
+                stripVertex(reflectedStrip, 5),
+                reflectedStartRight) &&
+            sameVertex(
+                stripVertex(reflectedStrip, 6),
+                reflectedStartLeft),
+            "Reflected curved and inclined strips must preserve the local " +
+            "MeshBuilder diagonal after handedness reversal.");
+
+        bool overlaps(
+            Tile3f firstStart,
+            Tile3f firstEnd,
+            Tile3f secondStart,
+            Tile3f secondEnd) =>
+            (bool)doSurfaceLinesOverlap.Invoke(
+                null,
+                new object[]
+                {
+                    firstStart,
+                    firstEnd,
+                    secondStart,
+                    secondEnd
+                });
+        Require(overlaps(
+                new Tile3f(-2, 0, 0),
+                new Tile3f(2, 0, 0),
+                new Tile3f(0, -2, 0),
+                new Tile3f(0, 2, 0)),
+            "Crossing same-height highway surfaces must collide even when " +
+            "their minimal layouts do not.");
+        Require(overlaps(
+                new Tile3f(-2, 0, 0),
+                new Tile3f(2, 0, 0),
+                new Tile3f(0, -2, 1),
+                new Tile3f(0, 2, 1)),
+            "Terrain highways must reject XY crossings even at a different " +
+            "height; this tool does not build overpasses.");
+        Require(!overlaps(
+                new Tile3f(-2, 0, 0),
+                new Tile3f(2, 0, 0),
+                new Tile3f(-2, 3, 0),
+                new Tile3f(2, 3, 0)),
+            "Separated parallel highway surfaces must remain buildable.");
+    }
+
+    private static void CheckElevationLaneTrajectories(
+        MethodInfo createTrajectories,
+        MethodInfo getExactDirection)
+    {
+        var gradeDirection = CreateTrackDirection(
+            0.0,
+            TrainTrackGradeFactor.G8);
+        var exactDirection = (RelTile3f)getExactDirection.Invoke(
+            null,
+            new object[] { gradeDirection });
+        var positions = ImmutableArray.Create(
+            new RelTile3f(0, 0, 0),
+            new RelTile3f(4, 0, Fix32.Half),
+            new RelTile3f(8, 0, Fix32.One));
+        var directions = ImmutableArray.Create(
+            exactDirection,
+            exactDirection,
+            exactDirection);
+        var firstLength =
+            (positions[1] - positions[0]).Length.Tiles();
+        var secondLength =
+            (positions[2] - positions[1]).Length.Tiles();
+        var source = new TrainTrackSegmentsRel(
+            positions,
+            directions,
+            ImmutableArray.Create(
+                RelTile1f.Zero,
+                firstLength,
+                firstLength + secondLength),
+            gradeDirection,
+            gradeDirection);
+        var arguments = new object[] { source, null, null };
+
+        createTrajectories.Invoke(null, arguments);
+        var forward = (RoadLaneTrajectory)arguments[1];
+        var reverse = (RoadLaneTrajectory)arguments[2];
+
+        Require(forward.LaneCenterSamples.Length == positions.Length &&
+                reverse.LaneCenterSamples.Length == positions.Length,
+            "G8 lane conversion must preserve every 3D source sample.");
+        for (var index = 0; index < positions.Length; index++)
+        {
+            var sourceIndex = positions.Length - index - 1;
+            Require(forward.LaneCenterSamples[index].Z ==
+                    positions[index].Z,
+                $"Forward G8 lane lost Z at sample {index}.");
+            Require(reverse.LaneCenterSamples[index].Z ==
+                    positions[sourceIndex].Z,
+                $"Reverse G8 lane lost Z at sample {index}.");
+            Require(forward.LaneCenterSamples[index].Xy.DistanceTo(
+                        positions[index].Xy) == Fix32.One,
+                $"Forward lane offset is not exactly one tile at sample " +
+                $"{index}.");
+            Require(reverse.LaneCenterSamples[index].Xy.DistanceTo(
+                        positions[sourceIndex].Xy) == Fix32.One,
+                $"Reverse lane offset is not exactly one tile at sample " +
+                $"{index}.");
+            Require(reverse.LaneDirectionSamples[index] ==
+                    -forward.LaneDirectionSamples[sourceIndex],
+                $"Reverse lane direction is not opposite at sample {index}.");
+            Require(forward.LaneDirectionSamples[index].IsNormalized &&
+                    reverse.LaneDirectionSamples[index].IsNormalized,
+                $"G8 lane direction is not normalized at sample {index}.");
+        }
+
+        CheckTrajectoryLengthPrefixes("Forward G8 lane", forward);
+        CheckTrajectoryLengthPrefixes("Reverse G8 lane", reverse);
+        Require(forward.SegmentLengthsPrefixSums.Last.IsNear(
+                    reverse.SegmentLengthsPrefixSums.Last) &&
+                forward.SegmentLengthsPrefixSums.Last.IsNear(
+                    firstLength + secondLength),
+            "Forward and reverse G8 lanes must retain the source 3D length.");
+    }
+
+    private static void CheckTrajectoryLengthPrefixes(
+        string description,
+        RoadLaneTrajectory trajectory)
+    {
+        Require(trajectory.SegmentLengthsPrefixSums.Length ==
+                trajectory.LaneCenterSamples.Length,
+            $"{description} has a mismatched length-prefix count.");
+        Require(trajectory.SegmentLengthsPrefixSums.First == RelTile1f.Zero,
+            $"{description} must start with a zero length prefix.");
+
+        var expected = RelTile1f.Zero;
+        for (var index = 1;
+             index < trajectory.LaneCenterSamples.Length;
+             index++)
+        {
+            expected += (trajectory.LaneCenterSamples[index] -
+                         trajectory.LaneCenterSamples[index - 1])
+                .Length
+                .Tiles();
+            Require(trajectory.SegmentLengthsPrefixSums[index].IsNear(
+                        expected),
+                $"{description} has an incorrect prefix at sample {index}.");
+        }
+    }
+
+    private static void CheckTerrainHeightTolerance(
+        MethodInfo isReachable,
+        MethodInfo areAccessHeightsReachable)
+    {
+        var roadHeight = HeightTilesF.Zero;
+        var exactTolerance = roadHeight + 0.5.TilesThick();
+        var aboveTolerance = roadHeight + 0.51.TilesThick();
+        bool reachable(HeightTilesF left, HeightTilesF right) =>
+            (bool)isReachable.Invoke(null, new object[] { left, right });
+        bool accessReachable(
+            HeightTilesF road,
+            HeightTilesF endpoint,
+            HeightTilesF access) =>
+            (bool)areAccessHeightsReachable.Invoke(
+                null,
+                new object[] { road, endpoint, access });
+
+        Require(reachable(roadHeight, roadHeight),
+            "Matching road and terrain heights must be reachable.");
+        Require(reachable(roadHeight, exactTolerance) &&
+                reachable(exactTolerance, roadHeight),
+            "A half-tile terrain-height difference must be reachable in " +
+            "both directions.");
+        Require(!reachable(roadHeight, aboveTolerance) &&
+                !reachable(aboveTolerance, roadHeight),
+            "A terrain-height difference above half a tile must be rejected " +
+            "in both directions.");
+        Require(accessReachable(
+                    roadHeight,
+                    exactTolerance,
+                    exactTolerance),
+            "Matching endpoint and recovery-tile heights must be accepted.");
+        Require(!accessReachable(
+                    roadHeight,
+                    aboveTolerance,
+                    roadHeight),
+            "A nearby matching recovery tile must not hide a vertical gap " +
+            "below the road endpoint.");
+    }
+
+    private static void CheckInclinedTerrainAccessIsRejected(Type directorType)
+    {
+        var tryResolve = directorType.GetMethod(
+            "TryResolveTerrainAccess",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: new[]
+            {
+                typeof(RoadGraphNodeKey),
+                typeof(VehiclePathFindingParams),
+                typeof(RoadPathSegment),
+                typeof(bool),
+                typeof(Tile2i).MakeByRefType()
+            },
+            modifiers: null);
+        Require(tryResolve != null,
+            "HighwayTrafficDirector.TryResolveTerrainAccess with the " +
+            "expected private signature is missing.");
+        var director = FormatterServices.GetUninitializedObject(directorType);
+
+        foreach (var grade in new[]
+                 {
+                     TrainTrackGradeFactor.G8,
+                     TrainTrackGradeFactor.GMinus8
+                 })
+        {
+            var node = new RoadGraphNodeKey(
+                RelTile1f.Zero,
+                RelTile1f.Zero,
+                0,
+                CreateTrackDirection(0.0, grade),
+                default);
+            var arguments = new object[]
+            {
+                node,
+                null,
+                default(RoadPathSegment),
+                false,
+                Tile2i.Zero
+            };
+            Require(!(bool)tryResolve.Invoke(director, arguments),
+                $"A {grade} road node must not become a terrain access.");
+        }
+    }
+
+    private static TrainTrackNodeDirection CreateTrackDirection(
+        double angleDegrees,
+        TrainTrackGradeFactor grade)
+    {
+        Require(TrainTrackNodeDirection.TryCreateFromAngle(
+                angleDegrees.Degrees(),
+                grade,
+                out var direction,
+                out _),
+            $"Could not create a {grade} direction at {angleDegrees} " +
+            "degrees for elevation smoke checks.");
+        return direction;
+    }
+
+    private static MethodInfo GetPrivateStaticMethod(
+        Type type,
+        string name,
+        params Type[] parameterTypes)
+    {
+        var method = type.GetMethod(
+            name,
+            BindingFlags.Static | BindingFlags.NonPublic,
+            binder: null,
+            types: parameterTypes,
+            modifiers: null);
+        Require(method != null,
+            $"{type.FullName}.{name} with the expected private static " +
+            "signature is missing.");
+        return method;
     }
 
     private static void Require(bool condition, string message)

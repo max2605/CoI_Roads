@@ -1,4 +1,4 @@
-Highway Roads 0.2.0
+Highway Roads 0.3.1
 ===================
 
 Kompatibel mit Captain of Industry v0.8.6 bis v0.8.6c.
@@ -13,7 +13,8 @@ Wartungsbedarf auf 50 % des Basiswerts.
 Die Strecke wird mit der öffentlichen Pfadplaner-API des Trains-DLC berechnet,
 erzeugt aber echte native Straßenobjekte und keine Gleise. Mehrere Pivots,
 S-Kurven und nahtlose Fortsetzungen erlauben lange, organisch verlaufende
-Straßen ohne starre 45-Grad-Beschränkung.
+Straßen ohne starre 45-Grad-Beschränkung. Ziele auf verschiedenen Geländehöhen
+werden durch sanfte Straßenrampen verbunden.
 
 Autobahn bauen
 --------------
@@ -35,6 +36,32 @@ Die anfängliche Startrichtung folgt automatisch der Maus und wird auf
 Startrichtung manuell wählen und „Spiegeln“ sie umkehren. Nach einem Pivot
 bleibt die Anschlussrichtung absichtlich fest, damit keine Winkelbrüche
 entstehen.
+
+Geländerampen
+-------------
+
+Liegt ein neuer Pivot höher oder tiefer als der vorherige, plant das Werkzeug
+automatisch eine echte Höhenrampe in die Straße. Der Planer verwendet die
+nativen Steigungsstufen 12,5 % und 25 % und bevorzugt bei genügend Platz die
+flachere Variante. Jeder Pivot und jeder Anschluss an eine Kreuzung bleibt
+waagerecht; Anstieg und Gefälle liegen glatt dazwischen. Auf- und Abfahrt
+funktionieren in beiden Fahrtrichtungen.
+
+Der Mod formt das Gelände nicht selbst. Die vorhandene Geländehöhe und der
+freie Bauraum müssen eine gültige Rampe zulassen. Zusätzlich zur nativen
+Planung wird der volle vier Kacheln breite Straßenkorridor auf beidseitigen
+Bodenkontakt innerhalb der nativen Toleranz, Kartenbegrenzungen und belegende
+Gebäude oder andere Entities geprüft. Kein Straßenpunkt darf über dem Gelände
+schweben oder in das Gelände schneiden; Wasser zählt nicht als Bodenstütze.
+Geländerampen sind keine Brücken: Eine Überdeckung mit einer bestehenden
+Autobahn bleibt auch bei unterschiedlicher Höhe gesperrt; Verbindungen sind nur
+an einem ausgewählten freien Straßenende zulässig. Mit älteren Versionen bereits
+gebaute schwebende Stücke werden nicht rückwirkend verändert und müssen vor der
+Neuplanung abgerissen werden.
+Bei einem freien Endpunkt probiert das Werkzeug automatisch alternative ebene
+Anfahrtsrichtungen. Bleibt die Vorschau bei zu kurzer Strecke oder blockiertem
+Korridor unbaubar, gibt ein weiter entfernter Pivot dem Planer mehr Platz für
+Rampenanfang, Steigung und Rampenende.
 
 Kreuzungen und Kreisverkehr
 ---------------------------
@@ -66,9 +93,11 @@ für kreuzende Mod-Fahrspuren keine Ampel- oder Vorfahrtsreservierung.
 Automatische Zufahrt
 --------------------
 
-Separate Auf- und Abfahrten sind nicht erforderlich. Fahrzeuge können an jedem
-gerichteten Segmentübergang auf eine erreichbare Autobahn wechseln und sie an
-einem späteren Übergang wieder verlassen.
+Separate Auf- und Abfahrten sind nicht erforderlich. Fahrzeuge können an
+waagerechten Segmentübergängen auf eine erreichbare Autobahn wechseln und sie
+an einem späteren Übergang wieder verlassen, wenn Straßen- und Geländehöhe
+übereinstimmen. Geneigte oder frei über dem Gelände liegende Rampenknoten sind
+keine Zugänge; dadurch entstehen keine vertikalen Fahrzeugsprünge.
 
 Routing
 -------
@@ -109,8 +138,9 @@ Wirkung
   - Alle straßenfähigen Fahrzeuge fahren auf Mod-Straßen mit 140 %
     Maximalgeschwindigkeit.
   - Auf normalen Autobahnsegmenten folgen Fahrzeuge den Lane-Trajektorien auch
-    in Kurven. Kreuzungen und Kreisverkehre behalten die native Lenkung, damit
-    Übergänge zwischen ihren kurzen Abbiegespuren nicht zurückgesetzt werden.
+    in Kurven sowie bergauf und bergab. Kreuzungen und Kreisverkehre behalten
+    die native Lenkung, damit Übergänge zwischen ihren kurzen Abbiegespuren
+    nicht zurückgesetzt werden.
   - Der Wartungsverbrauch auf Mod-Straßen beträgt 50 %.
   - Niedriger Treibstoff und Defekte wirken weiterhin normal.
 

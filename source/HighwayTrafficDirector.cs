@@ -9,6 +9,8 @@ using Mafi.Core.Entities;
 using Mafi.Core.Entities.Dynamic;
 using Mafi.Core.PathFinding;
 using Mafi.Core.Roads;
+using Mafi.Core.Terrain;
+using Mafi.Core.Trains;
 
 namespace GroundRoads;
 
@@ -191,6 +193,7 @@ public sealed class HighwayTrafficDirector : IDisposable
     private readonly IEntitiesManager m_entitiesManager;
     private readonly IRoadsManager m_roadsManager;
     private readonly ClearancePathabilityProvider m_pathabilityProvider;
+    private readonly TerrainManager m_terrainManager;
     private Dictionary<RoadGraphNodeKey, List<HighwayEdge>> m_cachedGraph;
     private HashSet<RoadGraphNodeKey> m_entryAccessNodes = new();
     private HashSet<RoadGraphNodeKey> m_exitAccessNodes = new();
@@ -199,11 +202,13 @@ public sealed class HighwayTrafficDirector : IDisposable
     public HighwayTrafficDirector(
         IEntitiesManager entitiesManager,
         IRoadsManager roadsManager,
-        ClearancePathabilityProvider pathabilityProvider)
+        ClearancePathabilityProvider pathabilityProvider,
+        TerrainManager terrainManager)
     {
         m_entitiesManager = entitiesManager;
         m_roadsManager = roadsManager;
         m_pathabilityProvider = pathabilityProvider;
+        m_terrainManager = terrainManager;
         m_roadsManager.RoadBecamePathable.AddNonSaveable(
             this,
             OnRoadChanged);
@@ -256,6 +261,7 @@ public sealed class HighwayTrafficDirector : IDisposable
 
         bool tryGetTerrainAccess(
             RoadGraphNodeKey node,
+            RoadPathSegment adjacentRoadSegment,
             out Tile2i accessTile)
         {
             if (terrainAccessTiles.TryGetValue(node, out accessTile))
@@ -267,7 +273,7 @@ public sealed class HighwayTrafficDirector : IDisposable
                 !TryResolveTerrainAccess(
                     node,
                     pathFindingParams,
-                    default,
+                    adjacentRoadSegment,
                     requireSafeFirstTarget: false,
                     out accessTile))
             {
@@ -389,13 +395,18 @@ public sealed class HighwayTrafficDirector : IDisposable
         var exits = new List<CandidateExit>();
         foreach (var distance in distances)
         {
-            if (!previous.ContainsKey(distance.Key) ||
+            if (!previous.TryGetValue(
+                    distance.Key,
+                    out var exitStep) ||
                 !m_exitAccessNodes.Contains(distance.Key))
             {
                 continue;
             }
 
-            if (!tryGetTerrainAccess(distance.Key, out var exitTile))
+            if (!tryGetTerrainAccess(
+                    distance.Key,
+                    exitStep.Edge.Segment,
+                    out var exitTile))
             {
                 continue;
             }
@@ -726,31 +737,113 @@ public sealed class HighwayTrafficDirector : IDisposable
         RoadGraphNodeKey node,
         VehiclePathFindingParams pathFindingParams)
     {
-        // HighwaySegmentProto follows terrain height at runtime, so Z is
-        // intentionally projected away. Round through the vehicle's native
-        // center-space convention before resolving a nearby terrain access;
-        // arbitrary trajectory samples are never eligible access anchors.
+        // Round through the vehicle's native center-space convention before
+        // resolving a nearby terrain access. Z is validated separately so an
+        // elevated ramp seam can never become a vertical vehicle teleport.
         return pathFindingParams.RoundCenterSpace(node.Position2f);
+    }
+
+    private static bool IsTerrainHeightReachable(
+        HeightTilesF roadHeight,
+        HeightTilesF terrainHeight)
+    {
+        // Planner anchors and exact lane endpoints may use half-tile heights.
+        // This matches the native road-entry height tolerance.
+        return (roadHeight - terrainHeight).Abs <=
+               0.5.TilesThick();
+    }
+
+    private static bool AreTerrainAccessHeightsReachable(
+        HeightTilesF roadHeight,
+        HeightTilesF endpointTerrainHeight,
+        HeightTilesF accessTerrainHeight)
+    {
+        return IsTerrainHeightReachable(
+                   roadHeight,
+                   endpointTerrainHeight) &&
+               IsTerrainHeightReachable(
+                   roadHeight,
+                   accessTerrainHeight);
+    }
+
+    private static bool TryGetExactRoadNodeHeight(
+        RoadGraphNodeKey node,
+        RoadPathSegment adjacentRoadSegment,
+        out HeightTilesF height)
+    {
+        var entity = adjacentRoadSegment.Entity;
+        entity.GetLaneNodes(
+            adjacentRoadSegment.LaneIndex,
+            out var start,
+            out var end);
+        var lane = entity.GetTransformedRoadLane(
+            adjacentRoadSegment.LaneIndex);
+        var laneOrigin = entity.CenterTile.CornerTile3f;
+        if (node == start)
+        {
+            height = (laneOrigin + lane.LaneCenterSamples.First).Height;
+            return true;
+        }
+
+        if (node == end)
+        {
+            height = (laneOrigin + lane.LaneCenterSamples.Last).Height;
+            return true;
+        }
+
+        height = default;
+        return false;
     }
 
     private bool TryResolveTerrainAccess(
         RoadGraphNodeKey node,
         VehiclePathFindingParams pathFindingParams,
-        RoadPathSegment firstRoadSegment,
+        RoadPathSegment adjacentRoadSegment,
         bool requireSafeFirstTarget,
         out Tile2i accessTile)
     {
+        // A terrain transition is only safe at a horizontal road seam. Ramp
+        // start/end pieces provide G0 nodes at their feet and crests; their
+        // inclined internal seams remain road-only even when a hillside is
+        // close enough to pass the height tolerance below.
+        if (node.Direction.GradeFactor != TrainTrackGradeFactor.G0)
+        {
+            accessTile = default;
+            return false;
+        }
+
+        if (!TryGetExactRoadNodeHeight(
+                node,
+                adjacentRoadSegment,
+                out var exactRoadHeight))
+        {
+            accessTile = default;
+            return false;
+        }
+
+        // Nearby recovery tiles are useful when the road footprint blocks
+        // the projected pathfinding tile, but they must never mask a road end
+        // that is floating above or buried below its own local terrain.
+        var endpointTerrainHeight =
+            m_terrainManager.GetHeight(node.Position2f);
+
         bool isAcceptable(Tile2i tile)
         {
             var cornerTile =
                 pathFindingParams.ConvertToCornerTileSpace(tile);
-            return m_pathabilityProvider.IsPathableRaw(
+            var terrainPosition =
+                pathFindingParams.ConvertToCenterTileSpace(cornerTile);
+            return AreTerrainAccessHeightsReachable(
+                       exactRoadHeight,
+                       endpointTerrainHeight,
+                       m_terrainManager.GetHeight(terrainPosition)) &&
+                   m_pathabilityProvider.IsPathableRaw(
                 cornerTile,
                 pathFindingParams.PathabilityQueryMask) &&
                 (!requireSafeFirstTarget ||
                  IsFirstRoadTargetSafe(
                      tile,
-                     firstRoadSegment,
+                     adjacentRoadSegment,
                      pathFindingParams));
         }
 

@@ -77,8 +77,9 @@ public sealed class GroundRoadsMod : IMod
             resolver.Resolve<GroundRoadToolbarRegistrator>();
         Log.Info(
             "GroundRoads: initialized. Train-planned highways, automatic " +
-            "traffic-director routing, T/+ intersections, roundabouts, " +
-            "lane-bound driving, and road bonuses are active; " +
+            "traffic-director routing, terrain elevation ramps, T/+ " +
+            "intersections, roundabouts, lane-bound driving, and road " +
+            "bonuses are active; " +
             $"loadedSave={gameWasLoaded}.");
     }
 
