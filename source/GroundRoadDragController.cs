@@ -45,7 +45,9 @@ public sealed class GroundRoadDragController :
     private const float PointerClickMaxDistanceSquared = 64f;
     private const int PortSnapSearchRange = 12;
     private const int PortSnapMaxDistanceSquared = 9;
-    private const int AttachmentCollisionSeamRange = 2;
+    private const int ExtendedPortSnapAnchorRange = 8;
+    private const int ExtendedPortSnapAnchorMaxDistanceSquared =
+        ExtendedPortSnapAnchorRange * ExtendedPortSnapAnchorRange;
     private const int RoadSurfaceCollisionBucketSize = 8;
     private const double RoadSurfaceSampleSpacing = 0.5;
     private const double RoadSurfaceCollisionRadius = 2.0;
@@ -615,9 +617,9 @@ public sealed class GroundRoadDragController :
         m_searchGoalPortIsOpen = false;
         foreach (var openPort in m_allOpenPorts)
         {
-            if (openPort.Center.Xy.IsNear(
-                    m_terrainCursor.Tile3i.Xy,
-                    PortSnapSearchRange))
+            if (IsPortWithinSnapSearchRange(
+                    openPort,
+                    m_terrainCursor.Tile3i))
             {
                 m_openPorts.Add(openPort);
             }
@@ -2220,10 +2222,10 @@ public sealed class GroundRoadDragController :
     {
         var existingSegmentsByBucket =
             new Dictionary<(int X, int Y), List<RoadSurfaceSegment>>();
-        var allowedStartAttachmentCenters =
-            new Dictionary<EntityId, List<Tile2i>>();
-        var allowedEndAttachmentCenters =
-            new Dictionary<EntityId, List<Tile2i>>();
+        var allowedStartAttachmentPorts =
+            new Dictionary<EntityId, List<HighwayPort>>();
+        var allowedEndAttachmentPorts =
+            new Dictionary<EntityId, List<HighwayPort>>();
         var existingSegments = new List<RoadSurfaceSegment>();
 
         foreach (var entity in
@@ -2240,8 +2242,8 @@ public sealed class GroundRoadDragController :
                 entity,
                 plannedStartPort,
                 plannedEndPort,
-                allowedStartAttachmentCenters,
-                allowedEndAttachmentCenters);
+                allowedStartAttachmentPorts,
+                allowedEndAttachmentPorts);
             AppendExistingRoadSurfaceSegments(entity, existingSegments);
         }
 
@@ -2306,8 +2308,8 @@ public sealed class GroundRoadDragController :
                             IsAllowedGeometricAttachmentOverlap(
                                 planned,
                                 existing.EntityId,
-                                allowedStartAttachmentCenters,
-                                allowedEndAttachmentCenters))
+                                allowedStartAttachmentPorts,
+                                allowedEndAttachmentPorts))
                         {
                             continue;
                         }
@@ -2325,8 +2327,8 @@ public sealed class GroundRoadDragController :
         RoadEntityBase entity,
         HighwayPort plannedStartPort,
         HighwayPort plannedEndPort,
-        Dictionary<EntityId, List<Tile2i>> startResult,
-        Dictionary<EntityId, List<Tile2i>> endResult)
+        Dictionary<EntityId, List<HighwayPort>> startResult,
+        Dictionary<EntityId, List<HighwayPort>> endResult)
     {
         if (entity.RoadProto is not IHighwayPortProto portProto)
         {
@@ -2359,36 +2361,36 @@ public sealed class GroundRoadDragController :
 
             if (isStart)
             {
-                AddAttachmentCenter(
+                AddAttachmentPort(
                     entity.Id,
-                    existingPort.Center.Xy,
+                    existingPort,
                     startResult);
             }
 
             if (isEnd)
             {
-                AddAttachmentCenter(
+                AddAttachmentPort(
                     entity.Id,
-                    existingPort.Center.Xy,
+                    existingPort,
                     endResult);
             }
         }
     }
 
-    private static void AddAttachmentCenter(
+    private static void AddAttachmentPort(
         EntityId entityId,
-        Tile2i center,
-        Dictionary<EntityId, List<Tile2i>> result)
+        HighwayPort port,
+        Dictionary<EntityId, List<HighwayPort>> result)
     {
-        if (!result.TryGetValue(entityId, out var centers))
+        if (!result.TryGetValue(entityId, out var ports))
         {
-            centers = new List<Tile2i>();
-            result.Add(entityId, centers);
+            ports = new List<HighwayPort>();
+            result.Add(entityId, ports);
         }
 
-        if (!centers.Contains(center))
+        if (!ports.Any(existing => AreSamePort(existing, port)))
         {
-            centers.Add(center);
+            ports.Add(port);
         }
     }
 
@@ -2526,40 +2528,42 @@ public sealed class GroundRoadDragController :
     private static bool IsAllowedGeometricAttachmentOverlap(
         RoadSurfaceSegment planned,
         EntityId existingEntityId,
-        Dictionary<EntityId, List<Tile2i>> allowedStartAttachmentCenters,
-        Dictionary<EntityId, List<Tile2i>> allowedEndAttachmentCenters)
+        Dictionary<EntityId, List<HighwayPort>> allowedStartAttachmentPorts,
+        Dictionary<EntityId, List<HighwayPort>> allowedEndAttachmentPorts)
     {
         return planned.AllowsStartAttachment &&
-                   IsGeometricAttachmentOverlapWithinCenters(
+                   IsGeometricAttachmentOverlapWithinPorts(
                        planned,
                        existingEntityId,
-                       allowedStartAttachmentCenters) ||
+                       allowedStartAttachmentPorts) ||
                planned.AllowsEndAttachment &&
-                   IsGeometricAttachmentOverlapWithinCenters(
+                   IsGeometricAttachmentOverlapWithinPorts(
                        planned,
                        existingEntityId,
-                       allowedEndAttachmentCenters);
+                       allowedEndAttachmentPorts);
     }
 
-    private static bool IsGeometricAttachmentOverlapWithinCenters(
+    private static bool IsGeometricAttachmentOverlapWithinPorts(
         RoadSurfaceSegment planned,
         EntityId existingEntityId,
-        Dictionary<EntityId, List<Tile2i>> allowedAttachmentCenters)
+        Dictionary<EntityId, List<HighwayPort>> allowedAttachmentPorts)
     {
-        if (allowedAttachmentCenters.TryGetValue(
+        if (allowedAttachmentPorts.TryGetValue(
                 existingEntityId,
-                out var centers))
+                out var ports))
         {
-            foreach (var center in centers)
+            foreach (var port in ports)
             {
                 if (IsRoadSurfacePointWithinAttachmentSeam(
                         planned.StartX,
                         planned.StartY,
-                        center) &&
+                        port.Center.Xy,
+                        port.AttachmentCollisionSeamRange) &&
                     IsRoadSurfacePointWithinAttachmentSeam(
                         planned.EndX,
                         planned.EndY,
-                        center))
+                        port.Center.Xy,
+                        port.AttachmentCollisionSeamRange))
                 {
                     return true;
                 }
@@ -2572,9 +2576,10 @@ public sealed class GroundRoadDragController :
     private static bool IsRoadSurfacePointWithinAttachmentSeam(
         double x,
         double y,
-        Tile2i center)
+        Tile2i center,
+        int seamRange)
     {
-        var tolerance = AttachmentCollisionSeamRange +
+        var tolerance = seamRange +
                         RoadSurfaceSampleSpacing;
         return Math.Abs(x - center.X) <= tolerance &&
                Math.Abs(y - center.Y) <= tolerance;
@@ -2921,7 +2926,8 @@ public sealed class GroundRoadDragController :
                 entity.Transform);
             if (IsWithinAttachmentCollisionSeam(
                     collisionTile,
-                    existingPort.Center.Xy) &&
+                    existingPort.Center.Xy,
+                    existingPort.AttachmentCollisionSeamRange) &&
                 IsAuthorizedAttachmentPort(
                     existingPort,
                     plannedStartPort,
@@ -2970,11 +2976,12 @@ public sealed class GroundRoadDragController :
 
     private static bool IsWithinAttachmentCollisionSeam(
         Tile2i collisionTile,
-        Tile2i portCenter)
+        Tile2i portCenter,
+        int seamRange)
     {
         return collisionTile.IsNear(
             portCenter,
-            AttachmentCollisionSeamRange);
+            seamRange);
     }
 
     private static void GetLogicalRoadPorts(
@@ -3022,19 +3029,77 @@ public sealed class GroundRoadDragController :
         Tile3i cursor,
         out HighwayPort result)
     {
+        return TrySelectClosestOpenPort(
+            m_openPorts,
+            cursor,
+            m_hasStart,
+            m_anchor,
+            out result);
+    }
+
+    private static bool IsPortWithinSnapSearchRange(
+        HighwayPort port,
+        Tile3i cursor)
+    {
+        return port.Center.Xy.IsNear(
+                   cursor.Xy,
+                   PortSnapSearchRange) ||
+               port.HasExtendedSnapArea &&
+               port.SnapAnchor.Xy.IsNear(
+                   cursor.Xy,
+                   ExtendedPortSnapAnchorRange);
+    }
+
+    private static bool TrySelectClosestOpenPort(
+        IEnumerable<HighwayPort> ports,
+        Tile3i cursor,
+        bool hasStart,
+        Tile3f anchor,
+        out HighwayPort result)
+    {
         var found = false;
+        var bestPriority = int.MaxValue;
         var bestDistance = long.MaxValue;
         result = default;
-        foreach (var port in m_openPorts)
+        foreach (var port in ports)
         {
-            var distance = port.Center.Xy.DistanceSqrTo(cursor.Xy);
-            if (distance > PortSnapMaxDistanceSquared ||
-                (found && distance >= bestDistance))
+            var cursorDistance = port.Center.Xy.DistanceSqrTo(cursor.Xy);
+            int priority;
+            long distance;
+            if (cursorDistance <= PortSnapMaxDistanceSquared)
+            {
+                // Pointing directly at a physical port always wins.
+                priority = 0;
+                distance = cursorDistance;
+            }
+            else if (port.HasExtendedSnapArea &&
+                     port.SnapAnchor.Xy.DistanceSqrTo(cursor.Xy) <=
+                     ExtendedPortSnapAnchorMaxDistanceSquared)
+            {
+                // A click anywhere on a junction body selects a free arm.
+                // For an active road, prefer the arm facing its current
+                // anchor; before the first pivot, prefer the cursor-nearest
+                // arm and retain deterministic discovery order on ties.
+                priority = 1;
+                distance = hasStart
+                    ? port.Center.Xy.DistanceSqrTo(
+                        anchor.Tile3iRounded.Xy)
+                    : cursorDistance;
+            }
+            else
+            {
+                continue;
+            }
+
+            if (found &&
+                (priority > bestPriority ||
+                 priority == bestPriority && distance >= bestDistance))
             {
                 continue;
             }
 
             found = true;
+            bestPriority = priority;
             bestDistance = distance;
             result = port;
         }

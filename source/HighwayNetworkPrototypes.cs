@@ -46,18 +46,30 @@ public interface IHighwayPortProto : IHighwayMainlineProto
 
 public readonly struct HighwayPort
 {
+    public const int DefaultAttachmentCollisionSeamRange = 2;
+    public const int RoundaboutAttachmentCollisionSeamRange = 4;
+
     public readonly Tile3i Center;
     public readonly RoadGraphNodeKey InboundNode;
     public readonly RoadGraphNodeKey OutboundNode;
+    public readonly Tile3i SnapAnchor;
+    public readonly bool HasExtendedSnapArea;
+    public readonly int AttachmentCollisionSeamRange;
 
     public HighwayPort(
         Tile3i center,
         RoadGraphNodeKey inboundNode,
-        RoadGraphNodeKey outboundNode)
+        RoadGraphNodeKey outboundNode,
+        Tile3i? extendedSnapAnchor = null,
+        int attachmentCollisionSeamRange =
+            DefaultAttachmentCollisionSeamRange)
     {
         Center = center;
         InboundNode = inboundNode;
         OutboundNode = outboundNode;
+        SnapAnchor = extendedSnapAnchor ?? center;
+        HasExtendedSnapArea = extendedSnapAnchor.HasValue;
+        AttachmentCollisionSeamRange = attachmentCollisionSeamRange;
     }
 
     public bool IsExactMateOf(HighwayPort other)
@@ -187,6 +199,10 @@ public sealed class HighwayJunctionProto : RoadEntityProto,
                 port.Center,
                 transform)
             .Tile3iRounded;
+        var snapAnchor = Layout.TransformPoint_RelToCenterTile(
+                RelTile3f.Zero,
+                transform)
+            .Tile3iRounded;
         return new HighwayPort(
             center,
             GetTransformedStartGraphNode(
@@ -194,7 +210,11 @@ public sealed class HighwayJunctionProto : RoadEntityProto,
                 transform),
             GetTransformedEndGraphNode(
                 port.OutboundLaneIndex,
-                transform));
+                transform),
+            snapAnchor,
+            Kind == HighwayNodeKind.Roundabout
+                ? HighwayPort.RoundaboutAttachmentCollisionSeamRange
+                : HighwayPort.DefaultAttachmentCollisionSeamRange);
     }
 }
 

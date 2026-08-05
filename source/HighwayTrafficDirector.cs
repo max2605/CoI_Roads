@@ -25,7 +25,7 @@ public sealed class HighwayTrafficDirector : IDisposable
     // Terrain reachability is only known after the native path finder tests a
     // candidate. Keep enough alternatives for obstructed or
     // navigate-closeby destinations without allowing an unbounded search.
-    private const int MaxRouteCandidates = 8;
+    private const int MaxRouteCandidates = 4;
     private const int MaxSafeRoadApproachTiles = 20;
 
     internal readonly struct Route

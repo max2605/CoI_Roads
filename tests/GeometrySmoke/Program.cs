@@ -88,6 +88,7 @@ internal static class Program
             CheckLegacyRampCompatibility(assembly);
             CheckLaneProjectionScope(assembly);
             CheckJunctionSnapPolicy(assembly);
+            CheckHighwayReroutePolicy(assembly);
             CheckJunctionSpacingPolicy(assembly);
             CheckElevationRampSupport(assembly);
 
@@ -98,7 +99,10 @@ internal static class Program
                 "junction placement with a 24-tile exclusion zone, native " +
                 "junction steering, no legacy ramp tools, reversible height " +
                 "curves, normalized terrain ramps, grade-independent " +
-                "heading selection, 16 flat-end retries, four-tile terrain " +
+                "heading selection, junction-body road snapping, extended " +
+                "roundabout attachment seams, bounded terrain-reroute " +
+                "work, 16 " +
+                "flat-end retries, four-tile terrain " +
                 "and entity-corridor clearance, geometric existing-highway " +
                 "collision checks, exact two-sided bilinear terrain support, " +
                 "no floating G4/G8 roads, selected open-port seams, and " +
@@ -264,6 +268,18 @@ internal static class Program
                 var primaryRelative = proto.GetHighwayPort(
                     portIndex,
                     primaryOrientation);
+                Require(primaryRelative.HasExtendedSnapArea,
+                    $"{kindName} base {baseDirectionIndex}, rotation " +
+                    $"{rotationIndex}, port {portIndex} must expose its " +
+                    "junction body as an extended road snap target.");
+                var expectedAttachmentSeam = kindName == "Roundabout"
+                    ? HighwayPort.RoundaboutAttachmentCollisionSeamRange
+                    : HighwayPort.DefaultAttachmentCollisionSeamRange;
+                Require(primaryRelative.AttachmentCollisionSeamRange ==
+                        expectedAttachmentSeam,
+                    $"{kindName} base {baseDirectionIndex}, rotation " +
+                    $"{rotationIndex}, port {portIndex} has an unexpected " +
+                    "attachment collision seam range.");
                 coveredDirections.Add(primaryRelative.InboundNode.Direction);
                 coveredDirections.Add(primaryRelative.OutboundNode.Direction);
                 var opposite = proto.GetHighwayPort(
@@ -573,9 +589,25 @@ internal static class Program
         var discoveryType = assembly.GetType(
             "GroundRoads.HighwayPortDiscovery",
             throwOnError: true);
+        var dragControllerType = assembly.GetType(
+            "GroundRoads.GroundRoadDragController",
+            throwOnError: true);
         var isEligiblePortSource = discoveryType.GetMethod(
             "IsEligiblePortSource",
             BindingFlags.Static | BindingFlags.NonPublic);
+        var isWithinSearchRange = GetPrivateStaticMethod(
+            dragControllerType,
+            "IsPortWithinSnapSearchRange",
+            typeof(HighwayPort),
+            typeof(Tile3i));
+        var trySelect = GetPrivateStaticMethod(
+            dragControllerType,
+            "TrySelectClosestOpenPort",
+            typeof(IEnumerable<HighwayPort>),
+            typeof(Tile3i),
+            typeof(bool),
+            typeof(Tile3f),
+            typeof(HighwayPort).MakeByRefType());
         var segment = FormatterServices.GetUninitializedObject(
             assembly.GetType(
                 "GroundRoads.HighwaySegmentProto",
@@ -597,6 +629,136 @@ internal static class Program
                 null,
                 new object[] { junction, false }),
             "Junction tools must reject direct junction-to-junction snaps.");
+
+        var farSegmentPort = new HighwayPort(
+            new Tile3i(8, 0, 0),
+            default,
+            default);
+        var rightJunctionPort = new HighwayPort(
+            new Tile3i(8, 0, 0),
+            default,
+            default,
+            Tile3i.Zero);
+        var leftJunctionPort = new HighwayPort(
+            new Tile3i(-8, 0, 0),
+            default,
+            default,
+            Tile3i.Zero);
+        bool withinSearch(HighwayPort port, Tile3i cursor) =>
+            (bool)isWithinSearchRange.Invoke(
+                null,
+                new object[] { port, cursor });
+        Require(withinSearch(farSegmentPort, Tile3i.Zero),
+            "The spatial prefilter must retain ordinary ports inside its " +
+            "broader search window.");
+        Require(withinSearch(rightJunctionPort, Tile3i.Zero),
+            "A road cursor over a junction body must discover its free " +
+            "arms even when their physical ports are eight tiles away.");
+        HighwayPort select(
+            IEnumerable<HighwayPort> ports,
+            Tile3i cursor,
+            bool hasStart,
+            Tile3f anchor)
+        {
+            var arguments = new object[]
+            {
+                ports,
+                cursor,
+                hasStart,
+                anchor,
+                default(HighwayPort)
+            };
+            Require((bool)trySelect.Invoke(null, arguments),
+                "Expected an open highway port to be selected.");
+            return (HighwayPort)arguments[4];
+        }
+
+        var farSegmentArguments = new object[]
+        {
+            new[] { farSegmentPort },
+            Tile3i.Zero,
+            false,
+            Tile3f.Zero,
+            default(HighwayPort)
+        };
+        Require(!(bool)trySelect.Invoke(null, farSegmentArguments),
+            "Ordinary highway ends must retain their narrow final snap " +
+            "range even when the spatial prefilter can see them.");
+        var outsideJunctionArguments = new object[]
+        {
+            new[] { rightJunctionPort },
+            new Tile3i(0, 9, 0),
+            false,
+            Tile3f.Zero,
+            default(HighwayPort)
+        };
+        Require(!(bool)trySelect.Invoke(null, outsideJunctionArguments),
+            "The extended junction snap area must not leak beyond the " +
+            "visible node neighborhood.");
+
+        var selectedFacingArm = select(
+            new[] { rightJunctionPort, leftJunctionPort },
+            Tile3i.Zero,
+            true,
+            new Tile3f(-30, 0, 0));
+        Require(selectedFacingArm.Center == leftJunctionPort.Center,
+            "Clicking a junction body while drawing must choose the free " +
+            "arm facing the active road anchor.");
+
+        var directPort = new HighwayPort(
+            new Tile3i(2, 0, 0),
+            default,
+            default);
+        var selectedDirectPort = select(
+            new[] { leftJunctionPort, directPort },
+            Tile3i.Zero,
+            true,
+            new Tile3f(-30, 0, 0));
+        Require(selectedDirectPort.Center == directPort.Center,
+            "A direct physical-port hit must take priority over an extended " +
+            "junction-body snap.");
+    }
+
+    private static void CheckHighwayReroutePolicy(Assembly assembly)
+    {
+        var pathFinderType = assembly.GetType(
+            "GroundRoads.HighwayVehiclePathFinder",
+            throwOnError: true);
+        var trafficDirectorType = assembly.GetType(
+            "GroundRoads.HighwayTrafficDirector",
+            throwOnError: true);
+        var isParticipatingHighwayProto = GetPrivateStaticMethod(
+            pathFinderType,
+            "IsParticipatingHighwayProto",
+            typeof(IHighwayNetworkProto));
+        var maxRouteCandidates = trafficDirectorType.GetField(
+            "MaxRouteCandidates",
+            BindingFlags.Static | BindingFlags.NonPublic);
+
+        var segment = (IHighwayNetworkProto)
+            FormatterServices.GetUninitializedObject(
+                assembly.GetType(
+                    "GroundRoads.HighwaySegmentProto",
+                    throwOnError: true));
+        var compatibilityRamp = (IHighwayNetworkProto)
+            FormatterServices.GetUninitializedObject(
+                assembly.GetType(
+                    "GroundRoads.HighwayOnRampProto",
+                    throwOnError: true));
+        bool participates(IHighwayNetworkProto proto) =>
+            (bool)isParticipatingHighwayProto.Invoke(
+                null,
+                new object[] { proto });
+
+        Require(participates(segment),
+            "Vehicles already driving on a participating highway must " +
+            "keep their native current-road route during terrain retries.");
+        Require(!participates(compatibilityRamp) && !participates(null),
+            "Legacy compatibility ramps and missing roads must not trigger " +
+            "the current-highway reroute shortcut.");
+        Require((int)maxRouteCandidates.GetRawConstantValue() == 4,
+            "Terrain-triggered highway routing must remain bounded to four " +
+            "best candidates.");
     }
 
     private static void CheckJunctionSpacingPolicy(Assembly assembly)
@@ -700,7 +862,8 @@ internal static class Program
             dragController,
             "IsWithinAttachmentCollisionSeam",
             typeof(Tile2i),
-            typeof(Tile2i));
+            typeof(Tile2i),
+            typeof(int));
         var doRoadSurfaceLinesOverlap = GetPrivateStaticMethod(
             dragController,
             "DoRoadSurfaceLinesOverlap",
@@ -986,15 +1149,31 @@ internal static class Program
             "Terrain beyond the native tolerance must be rejected both " +
             "above and below the road; terrain ramps are not bridges.");
 
-        bool allowedAt(int x, int y) =>
+        bool allowedAt(int x, int y, int seamRange =
+            HighwayPort.DefaultAttachmentCollisionSeamRange) =>
             (bool)isWithinAttachmentSeam.Invoke(
                 null,
-                new object[] { new Tile2i(x, y), Tile2i.Zero });
+                new object[]
+                {
+                    new Tile2i(x, y),
+                    Tile2i.Zero,
+                    seamRange
+                });
         Require(allowedAt(2, 2) && allowedAt(-2, -2),
             "Exact attachment entities must be allowed across the full " +
             "four-tile seam width.");
         Require(!allowedAt(3, 0) && !allowedAt(0, -3),
             "Attachment exceptions must not leak beyond the endpoint seam.");
+        Require(allowedAt(
+                    4,
+                    4,
+                    HighwayPort.RoundaboutAttachmentCollisionSeamRange) &&
+                !allowedAt(
+                    5,
+                    0,
+                    HighwayPort.RoundaboutAttachmentCollisionSeamRange),
+            "Roundabout attachment exceptions must cover their four-tile " +
+            "entry flare without leaking farther into the node.");
 
         bool attachmentException(
             bool endpoint,

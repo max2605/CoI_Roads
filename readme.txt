@@ -1,4 +1,4 @@
-Highway Roads 0.3.1
+Highway Roads 0.3.4
 ===================
 
 Kompatibel mit Captain of Industry v0.8.6 bis v0.8.6c.
@@ -82,7 +82,12 @@ Knotenmittelpunkten. Bei Überlappung oder zu geringem Abstand wird die Vorschau
 rot; ein Bauklick erklärt, dass dazwischen ein kurzes Autobahnstück nötig ist.
 Neue Autobahnen rasten beim ersten und letzten Punkt weiterhin an freien
 Knotenarmen ein. Position, Fahrtrichtung und Spurtyp werden dabei exakt
-verglichen. Mit „Drehen“ lässt sich in 22,5-Grad-Schritten insbesondere die
+verglichen. Ein Klick auf die sichtbare Kreuzung oder den Kreisverkehr wählt
+automatisch den zum bisherigen Straßenverlauf passenden freien Arm; ein
+direkter Klick nahe einem Arm hat Vorrang. Beim Kreisverkehr berücksichtigt
+die Kollisionsprüfung zusätzlich die längere Ein- und Ausfädelung am Arm.
+Mit „Drehen“ lässt sich in
+22,5-Grad-Schritten insbesondere die
 fehlende Seite der T-Kreuzung wählen. Belegte Mittelflächen verhindern das
 Platzieren über Gebäuden; die Fahrspuren des Kreisverkehrs werden physisch
 gemeinsam genutzt.
@@ -98,6 +103,9 @@ waagerechten Segmentübergängen auf eine erreichbare Autobahn wechseln und sie
 an einem späteren Übergang wieder verlassen, wenn Straßen- und Geländehöhe
 übereinstimmen. Geneigte oder frei über dem Gelände liegende Rampenknoten sind
 keine Zugänge; dadurch entstehen keine vertikalen Fahrzeugsprünge.
+Bei Terrainänderungen behalten Fahrzeuge auf dem Autobahnnetz ihre native
+aktuelle Straßenroute. Zusatzsuchen sind auf die vier besten Kandidaten
+begrenzt und erzeugen keine Logzeile pro Fahrzeug und Simulationsschritt.
 
 Routing
 -------
