@@ -91,6 +91,8 @@ internal static class Program
             CheckHighwayReroutePolicy(assembly);
             CheckJunctionSpacingPolicy(assembly);
             CheckElevationRampSupport(assembly);
+            CheckHighwaySupportModel(assembly);
+            CheckHighwayConstructionEconomy(assembly, kindType);
 
             Console.WriteLine(
                 "Geometry smoke checks passed: 4 variants each; " +
@@ -104,8 +106,13 @@ internal static class Program
                 "work, 16 " +
                 "flat-end retries, four-tile terrain " +
                 "and entity-corridor clearance, geometric existing-highway " +
-                "collision checks, exact two-sided bilinear terrain support, " +
-                "no floating G4/G8 roads, selected open-port seams, and " +
+                "collision checks, support-capable G0/G4/G8 surfaces, " +
+                "non-buried plateau crests, native Q/E elevation limits, " +
+                "rail-spaced concrete supports, 24-tile directional start " +
+                "snapping, " +
+                "selected open-port " +
+                "seams, stable asphalt IDs, deadlock-free G4/G8 pieces, " +
+                "length/area-based gravel and asphalt construction costs, and " +
                 "half-tile terrain access.");
             return 0;
         }
@@ -630,10 +637,36 @@ internal static class Program
                 new object[] { junction, false }),
             "Junction tools must reject direct junction-to-junction snaps.");
 
-        var farSegmentPort = new HighwayPort(
-            new Tile3i(8, 0, 0),
-            default,
-            default);
+        RoadGraphNodeKey node(double angleDegrees) =>
+            new(
+                RelTile1f.Zero,
+                RelTile1f.Zero,
+                0,
+                CreateTrackDirection(
+                    angleDegrees,
+                    TrainTrackGradeFactor.G0),
+                default);
+        HighwayPort segmentPort(Tile3i center, double outwardAngle) =>
+            new(center, default, node(outwardAngle));
+        Tile3i extensionCursor(
+            HighwayPort port,
+            double longitudinal,
+            double lateral = 0.0,
+            int zOffset = 0)
+        {
+            var outward = port.OutboundNode.Direction.Direction.Vector2f
+                .Normalized;
+            var outwardX = outward.X.ToDouble();
+            var outwardY = outward.Y.ToDouble();
+            return new Tile3i(
+                port.Center.X + (int)Math.Round(
+                    longitudinal * outwardX + lateral * outwardY),
+                port.Center.Y + (int)Math.Round(
+                    longitudinal * outwardY - lateral * outwardX),
+                port.Center.Z + zOffset);
+        }
+
+        var forwardSegmentPort = segmentPort(Tile3i.Zero, 0.0);
         var rightJunctionPort = new HighwayPort(
             new Tile3i(8, 0, 0),
             default,
@@ -648,9 +681,25 @@ internal static class Program
             (bool)isWithinSearchRange.Invoke(
                 null,
                 new object[] { port, cursor });
-        Require(withinSearch(farSegmentPort, Tile3i.Zero),
-            "The spatial prefilter must retain ordinary ports inside its " +
-            "broader search window.");
+        Require(withinSearch(
+                    forwardSegmentPort,
+                    extensionCursor(
+                        forwardSegmentPort,
+                        20.0,
+                        zOffset: 12)),
+            "The spatial prefilter must retain an ordinary highway end " +
+            "clicked 20 tiles ahead, regardless of terrain height.");
+        Require(!withinSearch(
+                    forwardSegmentPort,
+                    extensionCursor(forwardSegmentPort, 25.0)) &&
+                !withinSearch(
+                    forwardSegmentPort,
+                    extensionCursor(forwardSegmentPort, -10.0)) &&
+                !withinSearch(
+                    forwardSegmentPort,
+                    extensionCursor(forwardSegmentPort, 10.0, 4.0)),
+            "The continuation prefilter must reject overlong, wrong-side, " +
+            "and laterally distant highway clicks.");
         Require(withinSearch(rightJunctionPort, Tile3i.Zero),
             "A road cursor over a junction body must discover its free " +
             "arms even when their physical ports are eight tiles away.");
@@ -673,17 +722,85 @@ internal static class Program
             return (HighwayPort)arguments[4];
         }
 
-        var farSegmentArguments = new object[]
+        Require(select(
+                    new[] { forwardSegmentPort },
+                    extensionCursor(forwardSegmentPort, 10.0),
+                    false,
+                    Tile3f.Zero).Center == forwardSegmentPort.Center &&
+                select(
+                    new[] { forwardSegmentPort },
+                    extensionCursor(
+                        forwardSegmentPort,
+                        20.0,
+                        zOffset: 12),
+                    false,
+                    Tile3f.Zero).Center == forwardSegmentPort.Center,
+            "A first click 10-20 tiles beyond an open highway end must " +
+            "continue that highway, including onto higher dumped terrain.");
+        foreach (var rejectedCursor in new[]
+                 {
+                     extensionCursor(forwardSegmentPort, 25.0),
+                     extensionCursor(forwardSegmentPort, -10.0),
+                     extensionCursor(forwardSegmentPort, 10.0, 4.0)
+                 })
         {
-            new[] { farSegmentPort },
-            Tile3i.Zero,
+            var rejectedArguments = new object[]
+            {
+                new[] { forwardSegmentPort },
+                rejectedCursor,
+                false,
+                Tile3f.Zero,
+                default(HighwayPort)
+            };
+            Require(!(bool)trySelect.Invoke(null, rejectedArguments),
+                "An invalid highway-end continuation corridor was selected.");
+        }
+        var activeRoadArguments = new object[]
+        {
+            new[] { forwardSegmentPort },
+            extensionCursor(forwardSegmentPort, 20.0),
+            true,
+            Tile3f.Zero,
+            default(HighwayPort)
+        };
+        Require(!(bool)trySelect.Invoke(null, activeRoadArguments),
+            "Long-range continuation snapping must apply only to the first " +
+            "click, not to an active road goal.");
+
+        var outward = forwardSegmentPort.OutboundNode.Direction.Direction
+            .Vector2f.Normalized;
+        var oppositeCenter = new Tile3i(
+            -(int)Math.Round(outward.X.ToDouble()),
+            -(int)Math.Round(outward.Y.ToDouble()),
+            0);
+        var oppositeSegmentPort = segmentPort(oppositeCenter, 180.0);
+        Require(select(
+                    new[] { oppositeSegmentPort, forwardSegmentPort },
+                    extensionCursor(forwardSegmentPort, 20.0),
+                    false,
+                    Tile3f.Zero).Center == forwardSegmentPort.Center,
+            "A one-tile highway must select only the exterior end facing " +
+            "the user's distant continuation click.");
+
+        var diagonalPort = segmentPort(new Tile3i(30, 30, 5), 45.0);
+        Require(select(
+                    new[] { diagonalPort },
+                    extensionCursor(diagonalPort, 24.0, zOffset: 7),
+                    false,
+                    Tile3f.Zero).Center == diagonalPort.Center,
+            "Diagonal highway ends must retain the same 24-tile, height-" +
+            "independent continuation corridor.");
+        var outsideDiagonalArguments = new object[]
+        {
+            new[] { diagonalPort },
+            extensionCursor(diagonalPort, 25.0),
             false,
             Tile3f.Zero,
             default(HighwayPort)
         };
-        Require(!(bool)trySelect.Invoke(null, farSegmentArguments),
-            "Ordinary highway ends must retain their narrow final snap " +
-            "range even when the spatial prefilter can see them.");
+        Require(!(bool)trySelect.Invoke(null, outsideDiagonalArguments),
+            "Diagonal cursor rounding must not extend continuation snapping " +
+            "to the next lattice point beyond 24 tiles.");
         var outsideJunctionArguments = new object[]
         {
             new[] { rightJunctionPort },
@@ -832,6 +949,16 @@ internal static class Program
         var createPathFinderFlags = GetPrivateStaticMethod(
             dragController,
             "CreateHighwayPathFinderFlags");
+        var getPreferredRampHeight = GetPrivateStaticMethod(
+            dragController,
+            "GetPreferredRampHeight",
+            typeof(Tile3f),
+            typeof(Tile3f));
+        var getAdjustedRelativeHeight = GetPrivateStaticMethod(
+            dragController,
+            "GetAdjustedRelativeHeight",
+            typeof(ThicknessTilesI),
+            typeof(bool));
         var tryCreateFlatDirection = GetPrivateStaticMethod(
             dragController,
             "TryCreateFlatDirection",
@@ -857,7 +984,8 @@ internal static class Program
             GetPrivateStaticMethod(
             dragController,
             "IsTerrainRoadHeightDifferenceWithinTolerance",
-            typeof(double));
+            typeof(double),
+            typeof(bool));
         var isWithinAttachmentCollisionSeam = GetPrivateStaticMethod(
             dragController,
             "IsWithinAttachmentCollisionSeam",
@@ -881,7 +1009,8 @@ internal static class Program
             typeof(HeightTilesF),
             typeof(HeightTilesF),
             typeof(HeightTilesF),
-            typeof(HeightTilesF));
+            typeof(HeightTilesF),
+            typeof(bool));
         var createRoadSurfaceStripTriangles = GetPrivateStaticMethod(
             dragController,
             "CreateRoadSurfaceStripTriangles",
@@ -913,6 +1042,8 @@ internal static class Program
         CheckExactGradeDirections(getExactDirection);
         CheckDirectionIndexIgnoresGrade(getDirectionIndex);
         CheckElevationPathFinderFlags(createPathFinderFlags);
+        CheckPreferredRampHeight(getPreferredRampHeight);
+        CheckRelativeHeightControls(getAdjustedRelativeHeight);
         CheckFlatEndDirections(
             tryCreateFlatDirection,
             getFlatEndDirectionRetryIndex,
@@ -933,6 +1064,91 @@ internal static class Program
             isTerrainHeightReachable,
             areTerrainAccessHeightsReachable);
         CheckInclinedTerrainAccessIsRejected(trafficDirector);
+    }
+
+    private static void CheckRelativeHeightControls(MethodInfo adjustHeight)
+    {
+        ThicknessTilesI adjust(int current, bool raise) =>
+            (ThicknessTilesI)adjustHeight.Invoke(
+                null,
+                new object[] { new ThicknessTilesI(current), raise });
+
+        var maximum = TrainTrackPillarProto.MAX_PILLAR_HEIGHT.Value;
+        Require(adjust(0, false) == ThicknessTilesI.Zero &&
+                adjust(0, true) == ThicknessTilesI.One &&
+                adjust(1, false) == ThicknessTilesI.Zero,
+            "Q/E highway elevation must move one tile and never go below " +
+            "terrain level.");
+        Require(adjust(maximum - 1, true) ==
+                TrainTrackPillarProto.MAX_PILLAR_HEIGHT &&
+                adjust(maximum, true) ==
+                TrainTrackPillarProto.MAX_PILLAR_HEIGHT,
+            "E must clamp highway elevation to the native train-pillar " +
+            "height limit.");
+    }
+
+    private static void CheckHighwaySupportModel(Assembly assembly)
+    {
+        var modelFactory = assembly.GetType(
+            "GroundRoads.GroundRoadModelFactory",
+            throwOnError: true);
+        var shouldAppend = GetPrivateStaticMethod(
+            modelFactory,
+            "ShouldAppendSupportAtBlock",
+            typeof(int),
+            typeof(int));
+        bool selected(int index, int count) =>
+            (bool)shouldAppend.Invoke(null, new object[] { index, count });
+
+        Require(selected(0, 1) &&
+                !selected(-1, 1) &&
+                !selected(1, 1),
+            "A short planner piece must receive exactly one valid support.");
+        Require(selected(0, 3) && selected(1, 3) && selected(2, 3) &&
+                !selected(3, 3),
+            "Every candidate already selected by the native train helper " +
+            "must become a highway support.");
+
+        var dragController = assembly.GetType(
+            "GroundRoads.GroundRoadDragController",
+            throwOnError: true);
+        var getClearanceSamples = GetPrivateStaticMethod(
+            dragController,
+            "GetSupportClearanceLocalSamples",
+            typeof(ImmutableArray<RoadLaneTrajectory>));
+        var forward = new RelTile3f(1, 0, 0);
+        var reverse = new RelTile3f(-1, 0, 0);
+        var prefixes = ImmutableArray.Create(
+            RelTile1f.Zero,
+            1.0.Tiles());
+        var lanes = ImmutableArray.Create(
+            new RoadLaneTrajectory(
+                ImmutableArray.Create(
+                    new RelTile3f(0, 1, 0),
+                    new RelTile3f(1, 1, 0)),
+                ImmutableArray.Create(forward, forward),
+                prefixes),
+            new RoadLaneTrajectory(
+                ImmutableArray.Create(
+                    new RelTile3f(1, -1, 0),
+                    new RelTile3f(0, -1, 0)),
+                ImmutableArray.Create(reverse, reverse),
+                prefixes));
+        var clearanceSamples =
+            ((IEnumerable<RelTile3f>)getClearanceSamples.Invoke(
+                null,
+                new object[] { lanes }))
+            .ToArray();
+        var sampledLateralCoordinates = clearanceSamples
+            .Select(sample => Math.Round(sample.Y.ToDouble(), 6))
+            .Distinct()
+            .OrderBy(value => value)
+            .ToArray();
+        Require(clearanceSamples.Length == 12 &&
+                sampledLateralCoordinates.SequenceEqual(
+                    new[] { -2.0, -1.0, 0.0, 1.0, 2.0 }),
+            "Supported-piece classification must sample both complete " +
+            "two-tile lanes across the full four-tile highway width.");
     }
 
     private static void CheckHeightCurveReversal(MethodInfo reverse)
@@ -1051,10 +1267,33 @@ internal static class Program
 
         Require((flags & TrainTrackPathFinderFlags.GoalMustBeFlat) != 0,
             "Terrain ramps must still end on a flat planner seam.");
+        Require((flags & TrainTrackPathFinderFlags.IgnoreCollisions) != 0,
+            "The native 0.25-metre train-terrain prefilter must not reject " +
+            "dumped-ground ramps before the full-width highway validator.");
         Require((flags & TrainTrackPathFinderFlags.DisallowG4) == 0,
             "G4 terrain ramps must be available to the planner.");
         Require((flags & TrainTrackPathFinderFlags.DisallowG8) == 0,
             "G8 terrain ramps must be available to the planner.");
+    }
+
+    private static void CheckPreferredRampHeight(MethodInfo getPreferredHeight)
+    {
+        object preferred(Tile3f start, Tile3f goal) =>
+            getPreferredHeight.Invoke(null, new object[] { start, goal });
+
+        Require(preferred(
+                    new Tile3f(0, 0, 4),
+                    new Tile3f(20, 0, 4)) == null,
+            "A level highway must not receive an artificial height bias.");
+        var ascending = (HeightTilesI)preferred(
+            new Tile3f(0, 0, 1),
+            new Tile3f(20, 0, 7));
+        var descending = (HeightTilesI)preferred(
+            new Tile3f(0, 0, 7),
+            new Tile3f(20, 0, 1));
+        Require(ascending.Value == 7 && descending.Value == 7,
+            "Ascending and descending routes must prefer their higher end " +
+            "so the planner keeps ramps above dumped terrain.");
     }
 
     private static void CheckFlatEndDirections(
@@ -1131,23 +1370,34 @@ internal static class Program
         MethodInfo createRoadSurfaceStripTriangles,
         MethodInfo canUseAttachmentException)
     {
-        var tolerance = TrainTrackConstants.GROUND_TOLERANCE.Value
-            .ToDouble();
-        var outsideTolerance = tolerance + 0.01;
-        bool differenceMatches(double difference) =>
+        const double supportTolerance = 1.0;
+        const double penetrationTolerance = 0.02;
+        var maximumSupportDepth =
+            TrainTrackPillarProto.MAX_PILLAR_HEIGHT.Value;
+        var belowSupportRange = supportTolerance + 0.01;
+        var belowMaximumSupportDepth = maximumSupportDepth + 0.01;
+        var aboveVisibleDeck = penetrationTolerance + 0.01;
+        bool differenceMatches(double difference, bool allowAirBelow) =>
             (bool)isDifferenceWithinTolerance.Invoke(
                 null,
-                new object[] { difference });
+                new object[] { difference, allowAirBelow });
 
-        Require(differenceMatches(0.0) &&
-                differenceMatches(tolerance) &&
-                differenceMatches(-tolerance),
-            "Road surfaces must accept terrain within the native ground " +
-            "tolerance on both sides.");
-        Require(!differenceMatches(outsideTolerance) &&
-                !differenceMatches(-outsideTolerance),
-            "Terrain beyond the native tolerance must be rejected both " +
-            "above and below the road; terrain ramps are not bridges.");
+        Require(differenceMatches(0.0, false) &&
+                differenceMatches(penetrationTolerance, false) &&
+                differenceMatches(-supportTolerance, false),
+            "Road surfaces must accept support below and only the small " +
+            "visible-deck allowance above.");
+        Require(!differenceMatches(aboveVisibleDeck, false) &&
+                !differenceMatches(-belowSupportRange, false),
+            "An unsupported road must reject both terrain burial and an " +
+            "air gap beyond its support range.");
+        Require(!differenceMatches(aboveVisibleDeck, true) &&
+                differenceMatches(-belowSupportRange, true) &&
+                differenceMatches(-maximumSupportDepth, true) &&
+                !differenceMatches(-belowMaximumSupportDepth, true),
+            "Supported G0/G4/G8 pieces may span lower dry terrain only " +
+            "within the native six-tile pillar range, and the deck must " +
+            "never disappear into terrain.");
 
         bool allowedAt(int x, int y, int seamRange =
             HighwayPort.DefaultAttachmentCollisionSeamRange) =>
@@ -1208,7 +1458,8 @@ internal static class Program
             HeightTilesF bottomLeft,
             HeightTilesF bottomRight,
             HeightTilesF topLeft,
-            HeightTilesF topRight) =>
+            HeightTilesF topRight,
+            bool allowAirBelow = false) =>
             (bool)doesBilinearTerrainCellMatchRoadTriangle.Invoke(
                 null,
                 new object[]
@@ -1220,7 +1471,8 @@ internal static class Program
                     bottomLeft,
                     bottomRight,
                     topLeft,
-                    topRight
+                    topRight,
+                    allowAirBelow
                 });
         bool bothWindingsMatch(
             Tile3f first,
@@ -1230,7 +1482,8 @@ internal static class Program
             HeightTilesF bottomLeft,
             HeightTilesF bottomRight,
             HeightTilesF topLeft,
-            HeightTilesF topRight) =>
+            HeightTilesF topRight,
+            bool allowAirBelow = false) =>
             terrainTriangleMatches(
                 first,
                 second,
@@ -1239,7 +1492,8 @@ internal static class Program
                 bottomLeft,
                 bottomRight,
                 topLeft,
-                topRight) &&
+                topRight,
+                allowAirBelow) &&
             terrainTriangleMatches(
                 first,
                 third,
@@ -1248,7 +1502,8 @@ internal static class Program
                 bottomLeft,
                 bottomRight,
                 topLeft,
-                topRight);
+                topRight,
+                allowAirBelow);
         bool neitherWindingMatches(
             Tile3f first,
             Tile3f second,
@@ -1257,7 +1512,8 @@ internal static class Program
             HeightTilesF bottomLeft,
             HeightTilesF bottomRight,
             HeightTilesF topLeft,
-            HeightTilesF topRight) =>
+            HeightTilesF topRight,
+            bool allowAirBelow = false) =>
             !terrainTriangleMatches(
                 first,
                 second,
@@ -1266,7 +1522,8 @@ internal static class Program
                 bottomLeft,
                 bottomRight,
                 topLeft,
-                topRight) &&
+                topRight,
+                allowAirBelow) &&
             !terrainTriangleMatches(
                 first,
                 third,
@@ -1275,7 +1532,8 @@ internal static class Program
                 bottomLeft,
                 bottomRight,
                 topLeft,
-                topRight);
+                topRight,
+                allowAirBelow);
 
         var flatFirst = point(0.0, 0.0, 1.0);
         var flatSecond = point(2.0, 0.0, 1.0);
@@ -1296,52 +1554,64 @@ internal static class Program
                 flatSecond,
                 flatThird,
                 Tile2i.Zero,
-                height(1.0 + tolerance),
-                height(1.0 + tolerance),
-                height(1.0 + tolerance),
-                height(1.0 + tolerance)) &&
+                height(1.0 + penetrationTolerance),
+                height(1.0 + penetrationTolerance),
+                height(1.0 + penetrationTolerance),
+                height(1.0 + penetrationTolerance)) &&
                 bothWindingsMatch(
                     flatFirst,
                     flatSecond,
                     flatThird,
                     Tile2i.Zero,
-                    height(1.0 - tolerance),
-                    height(1.0 - tolerance),
-                    height(1.0 - tolerance),
-                    height(1.0 - tolerance)),
-            "Triangle terrain support must accept the native tolerance " +
-            "symmetrically above and below the road.");
+                    height(1.0 - supportTolerance),
+                    height(1.0 - supportTolerance),
+                    height(1.0 - supportTolerance),
+                    height(1.0 - supportTolerance)),
+            "Triangle terrain support must use independent burial and air-" +
+            "gap limits.");
         Require(neitherWindingMatches(
                 flatFirst,
                 flatSecond,
                 flatThird,
                 Tile2i.Zero,
-                height(1.0 + outsideTolerance),
-                height(1.0 + outsideTolerance),
-                height(1.0 + outsideTolerance),
-                height(1.0 + outsideTolerance)) &&
+                height(1.0 + aboveVisibleDeck),
+                height(1.0 + aboveVisibleDeck),
+                height(1.0 + aboveVisibleDeck),
+                height(1.0 + aboveVisibleDeck)) &&
                 neitherWindingMatches(
                     flatFirst,
                     flatSecond,
                     flatThird,
                     Tile2i.Zero,
-                    height(1.0 - outsideTolerance),
-                    height(1.0 - outsideTolerance),
-                    height(1.0 - outsideTolerance),
-                    height(1.0 - outsideTolerance)),
-            "Triangle terrain support must reject gaps beyond the native " +
-            "tolerance on either side.");
+                    height(1.0 - belowSupportRange),
+                    height(1.0 - belowSupportRange),
+                    height(1.0 - belowSupportRange),
+                    height(1.0 - belowSupportRange)),
+            "Triangle terrain support must reject burial and unsupported " +
+            "gaps beyond their separate limits.");
         Require(neitherWindingMatches(
                 flatFirst,
                 flatSecond,
                 flatThird,
                 Tile2i.Zero,
-                HeightTilesF.Zero,
-                HeightTilesF.Zero,
-                HeightTilesF.Zero,
-                HeightTilesF.Zero),
-            "A flat road floating above constant terrain must be rejected " +
-            "in both triangle windings.");
+                height(-0.01),
+                height(-0.01),
+                height(-0.01),
+                height(-0.01)),
+            "A flat road more than one tile above constant terrain must be " +
+            "rejected without supports in both triangle windings.");
+        Require(bothWindingsMatch(
+                flatFirst,
+                flatSecond,
+                flatThird,
+                Tile2i.Zero,
+                height(-0.01),
+                height(-0.01),
+                height(-0.01),
+                height(-0.01),
+                true),
+            "The same raised G0 surface must be accepted once highway " +
+            "supports are enabled.");
 
         var g4First = point(0.0, 0.0, 0.0);
         var g4Second = point(4.0, 0.0, 1.0);
@@ -1357,16 +1627,29 @@ internal static class Program
                 height(0.25)),
             "A terrain cell matching a G4 road plane must remain valid in " +
             "both triangle windings.");
-        Require(neitherWindingMatches(
-                point(0.0, 0.0, 1.0),
-                point(4.0, 0.0, 2.0),
-                point(0.0, 2.0, 1.0),
+        Require(bothWindingsMatch(
+                point(0.0, 0.0, 1.01),
+                point(4.0, 0.0, 2.01),
+                point(0.0, 2.0, 1.01),
                 Tile2i.Zero,
                 HeightTilesF.Zero,
                 height(0.25),
                 HeightTilesF.Zero,
-                height(0.25)),
-            "A G4 road floating one tile above matching terrain must be " +
+                height(0.25),
+                true),
+            "A G4 ramp must be allowed above lower dumped terrain in both " +
+            "triangle windings.");
+        Require(neitherWindingMatches(
+                g4First,
+                g4Second,
+                g4Third,
+                Tile2i.Zero,
+                height(1.01),
+                height(1.26),
+                height(1.01),
+                height(1.26),
+                true),
+            "Terrain penetrating a G4 ramp above the visible deck must be " +
             "rejected in both triangle windings.");
 
         var g8First = point(0.0, 0.0, 0.0);
@@ -1383,16 +1666,29 @@ internal static class Program
                 height(0.125)),
             "A terrain cell matching a G8 road plane must remain valid in " +
             "both triangle windings.");
-        Require(neitherWindingMatches(
-                point(0.0, 0.0, 1.0),
-                point(8.0, 0.0, 2.0),
-                point(0.0, 2.0, 1.0),
+        Require(bothWindingsMatch(
+                point(0.0, 0.0, 1.01),
+                point(8.0, 0.0, 2.01),
+                point(0.0, 2.0, 1.01),
                 Tile2i.Zero,
                 HeightTilesF.Zero,
                 height(0.125),
                 HeightTilesF.Zero,
-                height(0.125)),
-            "A G8 road floating one tile above matching terrain must be " +
+                height(0.125),
+                true),
+            "A G8 ramp must be allowed above lower dumped terrain in both " +
+            "triangle windings.");
+        Require(neitherWindingMatches(
+                g8First,
+                g8Second,
+                g8Third,
+                Tile2i.Zero,
+                height(1.01),
+                height(1.135),
+                height(1.01),
+                height(1.135),
+                true),
+            "Terrain penetrating a G8 ramp above the visible deck must be " +
             "rejected in both triangle windings.");
 
         var unitFirst = point(0.0, 0.0, 0.0);
@@ -1406,8 +1702,9 @@ internal static class Program
                 HeightTilesF.Zero,
                 HeightTilesF.Zero,
                 HeightTilesF.Zero,
-                height(3.0 * tolerance)),
-            "An h11 corner at three tolerances must stay valid because " +
+                height(3.0 * penetrationTolerance)),
+            "An h11 corner at three penetration tolerances must stay valid " +
+            "because " +
             "the bilinear peak inside the unit triangle is only 3T/4.");
         Require(neitherWindingMatches(
                 unitFirst,
@@ -1417,8 +1714,9 @@ internal static class Program
                 HeightTilesF.Zero,
                 HeightTilesF.Zero,
                 HeightTilesF.Zero,
-                height(5.0 * tolerance)),
-            "An h11 corner at five tolerances must be rejected because " +
+                height(5.0 * penetrationTolerance)),
+            "An h11 corner at five penetration tolerances must be rejected " +
+            "because " +
             "its off-corner bilinear peak inside the triangle exceeds T.");
 
         var baseHeight = 2.0;
@@ -1427,13 +1725,16 @@ internal static class Program
         var lowerThird = point(
             1.0,
             1.0,
-            baseHeight - tolerance / 2.0);
+            baseHeight - supportTolerance / 2.0);
         var lowerTerrain = new[]
         {
-            height(baseHeight - tolerance),
-            height(baseHeight - tolerance + 17.0 * tolerance / 32.0),
-            height(baseHeight - tolerance + tolerance / 32.0),
-            height(baseHeight - tolerance - 7.0 * tolerance / 16.0)
+            height(baseHeight - supportTolerance),
+            height(baseHeight - supportTolerance +
+                17.0 * supportTolerance / 32.0),
+            height(baseHeight - supportTolerance +
+                supportTolerance / 32.0),
+            height(baseHeight - supportTolerance -
+                7.0 * supportTolerance / 16.0)
         };
         Require(neitherWindingMatches(
                 lowerFirst,
@@ -1446,19 +1747,34 @@ internal static class Program
                 lowerTerrain[3]),
             "A convex bilinear minimum that creates an off-centre air gap " +
             "must be rejected in both triangle windings.");
+        Require(bothWindingsMatch(
+                lowerFirst,
+                lowerSecond,
+                lowerThird,
+                Tile2i.Zero,
+                lowerTerrain[0],
+                lowerTerrain[1],
+                lowerTerrain[2],
+                lowerTerrain[3],
+                true),
+            "The same off-centre air gap must be permitted for a real " +
+            "G4/G8 ramp strip.");
 
         var upperFirst = point(1.0, 0.0, baseHeight);
         var upperSecond = point(0.0, 1.0, baseHeight);
         var upperThird = point(
             1.0,
             1.0,
-            baseHeight + tolerance / 2.0);
+            baseHeight + penetrationTolerance / 2.0);
         var upperTerrain = new[]
         {
-            height(baseHeight + tolerance),
-            height(baseHeight + tolerance - 17.0 * tolerance / 32.0),
-            height(baseHeight + tolerance - tolerance / 32.0),
-            height(baseHeight + tolerance + 7.0 * tolerance / 16.0)
+            height(baseHeight + penetrationTolerance),
+            height(baseHeight + penetrationTolerance -
+                17.0 * penetrationTolerance / 32.0),
+            height(baseHeight + penetrationTolerance -
+                penetrationTolerance / 32.0),
+            height(baseHeight + penetrationTolerance +
+                7.0 * penetrationTolerance / 16.0)
         };
         Require(neitherWindingMatches(
                 upperFirst,
@@ -1471,6 +1787,18 @@ internal static class Program
                 upperTerrain[3]),
             "A concave bilinear maximum that clips an off-centre road " +
             "point must be rejected in both triangle windings.");
+        Require(neitherWindingMatches(
+                upperFirst,
+                upperSecond,
+                upperThird,
+                Tile2i.Zero,
+                upperTerrain[0],
+                upperTerrain[1],
+                upperTerrain[2],
+                upperTerrain[3],
+                true),
+            "Ramp clearance must not hide an off-centre terrain " +
+            "penetration.");
 
         var tangentTerrain = height(100.0);
         Require(bothWindingsMatch(
@@ -1890,6 +2218,154 @@ internal static class Program
             $"Could not create a {grade} direction at {angleDegrees} " +
             "degrees for elevation smoke checks.");
         return direction;
+    }
+
+    private static void CheckHighwayConstructionEconomy(
+        Assembly assembly,
+        Type kindType)
+    {
+        var roadsDataType = assembly.GetType(
+            "GroundRoads.GroundRoadsData",
+            throwOnError: true);
+        var shouldUseConstructionMaterials = GetPrivateStaticMethod(
+            roadsDataType,
+            "ShouldUseConstructionMaterialsForHighwaySegment",
+            typeof(bool));
+        Require((bool)shouldUseConstructionMaterials.Invoke(
+                    null,
+                    new object[] { false }) &&
+                !(bool)shouldUseConstructionMaterials.Invoke(
+                    null,
+                    new object[] { true }),
+            "Flat highway pieces must retain material sites, while G4/G8 " +
+            "pieces must complete immediately to avoid an unreachable ramp " +
+            "construction deadlock.");
+
+        var dragController = assembly.GetType(
+            "GroundRoads.GroundRoadDragController",
+            throwOnError: true);
+        var shouldCompleteFlatPieceImmediately = GetPrivateStaticMethod(
+            dragController,
+            "ShouldCompleteFlatPieceImmediately",
+            typeof(double));
+        var shouldCompletePlanImmediately = GetPrivateStaticMethod(
+            dragController,
+            "ShouldCompletePlanImmediately",
+            typeof(int));
+        bool completesImmediately(double clearance) =>
+            (bool)shouldCompleteFlatPieceImmediately.Invoke(
+                null,
+                new object[] { clearance });
+        Require(!completesImmediately(0.24) &&
+                completesImmediately(0.25) &&
+                completesImmediately(1.0),
+            "Ground-supported G0 pieces must retain material costs, while " +
+            "visibly pillar-supported G0 pieces complete immediately so " +
+            "their construction site cannot deadlock in the air.");
+        Require(!(bool)shouldCompletePlanImmediately.Invoke(
+                    null,
+                    new object[] { 0 }) &&
+                (bool)shouldCompletePlanImmediately.Invoke(
+                    null,
+                    new object[] { 1 }) &&
+                (bool)shouldCompletePlanImmediately.Invoke(
+                    null,
+                    new object[] { 8 }),
+            "A connected plan must switch to one immediate batch as soon " +
+            "as any flat piece needs visible supports; a ground-only plan " +
+            "must remain paid.");
+
+        var idsType = assembly.GetType(
+            "GroundRoads.GroundRoadMaterialIds",
+            throwOnError: true);
+        var asphaltId = idsType.GetField(
+                "Asphalt",
+                BindingFlags.Static | BindingFlags.Public)
+            .GetValue(null);
+        var recipeId = idsType.GetField(
+                "AsphaltMixing",
+                BindingFlags.Static | BindingFlags.Public)
+            .GetValue(null);
+        Require(asphaltId.ToString() == "Product_GroundRoads_Asphalt",
+            "The asphalt product ID must remain stable for save games.");
+        Require(recipeId.ToString() == "GroundRoads_AsphaltMixing",
+            "The asphalt recipe ID must remain stable for save games.");
+
+        var costsType = assembly.GetType(
+            "GroundRoads.HighwayConstructionCosts",
+            throwOnError: true);
+        var forLength = costsType.GetMethod(
+            "ForLength",
+            BindingFlags.Static | BindingFlags.Public);
+        var forNode = costsType.GetMethod(
+            "ForNode",
+            BindingFlags.Static | BindingFlags.Public);
+        Require(forLength != null && forNode != null,
+            "Highway material cost factories are missing.");
+
+        void requireAmounts(object amounts, int gravel, int asphalt,
+            string description)
+        {
+            var amountType = amounts.GetType();
+            var actualGravel = (int)amountType.GetField("Gravel")
+                .GetValue(amounts);
+            var actualAsphalt = (int)amountType.GetField("Asphalt")
+                .GetValue(amounts);
+            Require(actualGravel == gravel && actualAsphalt == asphalt,
+                $"{description}: expected {gravel} gravel/{asphalt} " +
+                $"asphalt, got {actualGravel}/{actualAsphalt}.");
+        }
+
+        requireAmounts(forLength.Invoke(null, new object[] { 0.1 }), 2, 1,
+            "Sub-tile planner piece");
+        requireAmounts(forLength.Invoke(null, new object[] { 1.0 }), 2, 1,
+            "One-tile planner piece");
+        requireAmounts(forLength.Invoke(null, new object[] { 1.01 }), 4, 2,
+            "Rounded two-tile planner piece");
+        requireAmounts(forLength.Invoke(null, new object[] { 8.0 }), 16, 8,
+            "Eight-tile highway segment");
+
+        requireAmounts(
+            forNode.Invoke(
+                null,
+                new[] { Enum.Parse(kindType, "TIntersection") }),
+            24,
+            12,
+            "T intersection");
+        requireAmounts(
+            forNode.Invoke(
+                null,
+                new[] { Enum.Parse(kindType, "CrossIntersection") }),
+            32,
+            16,
+            "Cross intersection");
+        requireAmounts(
+            forNode.Invoke(
+                null,
+                new[] { Enum.Parse(kindType, "Roundabout") }),
+            48,
+            24,
+            "Roundabout");
+
+        foreach (var invalidLength in new[]
+                 {
+                     0.0,
+                     -1.0,
+                     double.NaN,
+                     double.PositiveInfinity
+                 })
+        {
+            try
+            {
+                forLength.Invoke(null, new object[] { invalidLength });
+                throw new InvalidOperationException(
+                    $"Invalid road length {invalidLength} was accepted.");
+            }
+            catch (TargetInvocationException error)
+                when (error.InnerException is ArgumentOutOfRangeException)
+            {
+            }
+        }
     }
 
     private static MethodInfo GetPrivateStaticMethod(

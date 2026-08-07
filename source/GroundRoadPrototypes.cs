@@ -1073,6 +1073,13 @@ internal static class GroundRoadsData
                 BasicLane,
                 reverse.SegmentLengthsPrefixSums.Last));
         var laneTrajectories = ImmutableArray.Create(forward, reverse);
+        var constructionCosts =
+            ShouldUseConstructionMaterialsForHighwaySegment(
+                track.HasElevationChange)
+                ? HighwayConstructionCosts.CreateForLength(
+                    registrator,
+                    forward.SegmentLengthsPrefixSums.Last.Value.ToDouble())
+                : EntityCosts.None;
 
         registrator.PrototypesDb.Add(
             new HighwaySegmentProto(
@@ -1080,9 +1087,10 @@ internal static class GroundRoadsData
                 Proto.CreateStr(
                     id,
                     "Autobahnsegment",
-                    "Internes, vom Schienenplaner erzeugtes Autobahnsegment."),
+                    "Vom Schienenplaner erzeugtes Asphaltsegment mit " +
+                    "Kiesunterbau."),
                 CreateMinimalHighwayLayout(track.Layout),
-                EntityCosts.None,
+                constructionCosts,
                 track.MaxSpeedTilesPerTick.Min(
                     s_maxRoadVehicleSpeedPerTick),
                 lanes,
@@ -1095,6 +1103,16 @@ internal static class GroundRoadsData
                     RoadIcon),
                 track,
                 correctsReflectedHandedness));
+    }
+
+    private static bool ShouldUseConstructionMaterialsForHighwaySegment(
+        bool hasElevationChange)
+    {
+        // A construction site in the middle of an unfinished ramp cannot be
+        // reached by trucks: the road needed to climb there is precisely the
+        // entity still waiting for delivery. Complete only those G4/G8 pieces
+        // immediately so they open access to the paid horizontal continuation.
+        return !hasElevationChange;
     }
 
     private static RoadLaneTrajectory ReverseLaneTrajectory(

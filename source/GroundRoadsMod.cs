@@ -32,6 +32,7 @@ public sealed class GroundRoadsMod : IMod
 
     public void RegisterPrototypes(ProtoRegistrator registrator)
     {
+        registrator.RegisterData(new AsphaltProductionData());
         GroundRoadsData.Register(registrator);
     }
 
@@ -76,9 +77,10 @@ public sealed class GroundRoadsMod : IMod
         m_toolbarRegistrator =
             resolver.Resolve<GroundRoadToolbarRegistrator>();
         Log.Info(
-            "GroundRoads: initialized. Train-planned highways, automatic " +
-            "traffic-director routing, terrain elevation ramps, T/+ " +
-            "intersections, roundabouts, lane-bound driving, and road " +
+            "GroundRoads: initialized. Resource-supplied asphalt highways, " +
+            "automatic traffic-director routing, Q/E elevation ramps with " +
+            "concrete supports, " +
+            "T/+ intersections, roundabouts, lane-bound driving, and road " +
             "bonuses are active; " +
             $"loadedSave={gameWasLoaded}.");
     }

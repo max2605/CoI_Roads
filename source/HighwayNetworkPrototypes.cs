@@ -358,7 +358,7 @@ internal static class HighwayNetworkData
                 id,
                 Proto.CreateStr(id, name, description),
                 layout,
-                EntityCosts.None,
+                HighwayConstructionCosts.CreateForNode(registrator, kind),
                 maxVehiclesSpeedPerTick,
                 ToImmutable(geometry.LaneSpecs),
                 ToImmutable(geometry.LaneData),

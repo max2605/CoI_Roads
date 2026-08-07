@@ -21,6 +21,7 @@ using Mafi.Unity.InputControl.Factory;
 using Mafi.Unity.Ui;
 using Mafi.Unity.Ui.Hud;
 using Mafi.Unity.Ui.Hud.Toolbar.MenuItems;
+using Mafi.Unity.UiToolkit.Component;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using EntityId = Mafi.Core.EntityId;
@@ -43,14 +44,20 @@ public sealed class GroundRoadDragController :
     private const float DoubleClickWindowSeconds = 0.30f;
     private const float MaximumSearchSecondsPerGoal = 8f;
     private const float PointerClickMaxDistanceSquared = 64f;
-    private const int PortSnapSearchRange = 12;
     private const int PortSnapMaxDistanceSquared = 9;
     private const int ExtendedPortSnapAnchorRange = 8;
     private const int ExtendedPortSnapAnchorMaxDistanceSquared =
         ExtendedPortSnapAnchorRange * ExtendedPortSnapAnchorRange;
+    // Half a tile accounts for integer cursor rounding at diagonal headings;
+    // the next lattice point beyond the advertised 24 tiles still fails.
+    private const double HighwayEndExtensionSnapLength = 24.5;
+    private const double HighwayEndExtensionSnapHalfWidth = 3.0;
     private const int RoadSurfaceCollisionBucketSize = 8;
     private const double RoadSurfaceSampleSpacing = 0.5;
     private const double RoadSurfaceCollisionRadius = 2.0;
+    private const double GroundSupportToleranceTiles = 1.0;
+    private const double TerrainPenetrationToleranceTiles = 0.02;
+    private const double MinimumVisibleSupportHeightTiles = 0.25;
 
     private readonly struct Piece
     {
@@ -213,6 +220,7 @@ public sealed class GroundRoadDragController :
     private readonly TerrainOccupancyManager m_terrainOccupancyManager;
     private readonly IEntitiesManager m_entitiesManager;
     private readonly ISimLoopEvents m_simLoopEvents;
+    private readonly Toolbox m_elevationToolbox;
     private readonly Dictionary<(string TrackId, bool Reflected),
         HighwaySegmentProto> m_segmentsByTrackId;
     private readonly List<Piece> m_pieces = new();
@@ -284,7 +292,8 @@ public sealed class GroundRoadDragController :
         TerrainOccupancyManager terrainOccupancyManager,
         IEntitiesManager entitiesManager,
         ISimLoopEvents simLoopEvents,
-        ProtosDb protosDb)
+        ProtosDb protosDb,
+        ToolbarHud hud)
     {
         m_inputScheduler = context.InputScheduler;
         m_inputManager = context.InputMgr;
@@ -303,6 +312,18 @@ public sealed class GroundRoadDragController :
                     x.SourceTrackProto.Id.Value,
                     x.CorrectsReflectedHandedness),
                 x => x);
+        m_elevationToolbox = hud.CreateToolbox();
+        m_elevationToolbox.AddEntry(
+            "Assets/Unity/UserInterface/General/PlatformUp128.png",
+            shortcuts => shortcuts.RaiseUp,
+            () => ChangeTerrainCursorHeight(raise: true),
+            tooltip: null);
+        m_elevationToolbox.AddEntry(
+            "Assets/Unity/UserInterface/General/PlatformDown128.png",
+            shortcuts => shortcuts.LowerDown,
+            () => ChangeTerrainCursorHeight(raise: false),
+            tooltip: null);
+        m_elevationToolbox.Hide();
         m_simLoopEvents.Sync.AddNonSaveable(this, SyncUpdate);
     }
 
@@ -328,6 +349,8 @@ public sealed class GroundRoadDragController :
             ResetPlanningState();
         }
         m_terrainCursor.Activate();
+        m_terrainCursor.RelativeHeight = ThicknessTilesI.Zero;
+        m_elevationToolbox.Show();
         Log.Info("GroundRoads: train-planned highway tool activated.");
     }
 
@@ -351,6 +374,7 @@ public sealed class GroundRoadDragController :
             m_continueAfterPendingBuild = false;
             ResetPlanningState();
         }
+        m_elevationToolbox.Hide();
         m_terrainCursor.Deactivate();
     }
 
@@ -371,6 +395,24 @@ public sealed class GroundRoadDragController :
             return false;
         }
 
+        // Match the train-track construction tool exactly: use the configured
+        // RaiseUp/LowerDown bindings (E/Q by default), move one height tile per
+        // key press, and clamp the cursor to the native pillar height range.
+        var handledElevationShortcut = false;
+        if (m_shortcuts.IsDown(m_shortcuts.LowerDown))
+        {
+            handledElevationShortcut = true;
+            ChangeTerrainCursorHeight(raise: false);
+        }
+        if (m_shortcuts.IsDown(m_shortcuts.RaiseUp))
+        {
+            handledElevationShortcut = true;
+            ChangeTerrainCursorHeight(raise: true);
+        }
+
+        // Keep the elevation controls live while a completed route is being
+        // synchronized. This mirrors the track tool and lets a continued
+        // route start at the height the player already selected.
         if (UpdatePendingBuild())
         {
             return true;
@@ -491,7 +533,7 @@ public sealed class GroundRoadDragController :
         {
             ClearPreviews();
             m_previewDirty = true;
-            return false;
+            return handledElevationShortcut;
         }
 
         if (!m_hasStart)
@@ -536,7 +578,7 @@ public sealed class GroundRoadDragController :
                 return true;
             }
 
-            return false;
+            return handledElevationShortcut;
         }
 
         UpdatePathSearch();
@@ -587,7 +629,45 @@ public sealed class GroundRoadDragController :
             return true;
         }
 
-        return false;
+        return handledElevationShortcut;
+    }
+
+    private void ChangeTerrainCursorHeight(bool raise)
+    {
+        if (!m_isActive)
+        {
+            return;
+        }
+
+        var current = m_terrainCursor.RelativeHeight;
+        var adjusted = GetAdjustedRelativeHeight(current, raise);
+        if (adjusted == current)
+        {
+            return;
+        }
+
+        m_terrainCursor.RelativeHeight = adjusted;
+        InvalidateConfirmationClick();
+        InvalidatePendingPrimaryClick();
+        ResetFlatEndDirectionRetries();
+        if (m_hasStart)
+        {
+            RestartSearch();
+        }
+        else
+        {
+            m_previewDirty = true;
+        }
+    }
+
+    private static ThicknessTilesI GetAdjustedRelativeHeight(
+        ThicknessTilesI current,
+        bool raise)
+    {
+        return raise
+            ? (current + ThicknessTilesI.One)
+                .Min(TrainTrackPillarProto.MAX_PILLAR_HEIGHT)
+            : (current - ThicknessTilesI.One).Max(ThicknessTilesI.Zero);
     }
 
     public void DisposeForHotReload()
@@ -1040,7 +1120,7 @@ public sealed class GroundRoadDragController :
         }
 
         UpdateAutomaticStartDirection(directionGoal);
-        var options = CreateOptions(m_forcedEndDirection);
+        var options = CreateOptions(m_forcedEndDirection, goal);
 
         if (m_hasPendingPrimaryClick &&
             Time.unscaledTime - m_pendingPrimaryClickTime >=
@@ -1141,10 +1221,11 @@ public sealed class GroundRoadDragController :
                 Log.Warning(
                     "GroundRoads: rejected a highway plan because an " +
                     "endpoint port is unavailable, its full four-tile " +
-                    "surface lacks continuous dry terrain support, or an " +
-                    "entity intersects the corridor. Free the port, " +
-                    "fill/grade/remove terrain, clear the corridor, or " +
-                    "move/add a pivot.");
+                    "surface is buried by terrain, water/map bounds are " +
+                    "crossed, or " +
+                    "an entity intersects the corridor. Free the port, " +
+                    "grade/remove blocking terrain, clear the corridor, " +
+                    "or move/add a pivot.");
                 m_currentPlan = Option<TrainTrackPlan>.None;
                 m_currentPlanIsExact = false;
                 InvalidatePendingPrimaryClick();
@@ -1238,16 +1319,29 @@ public sealed class GroundRoadDragController :
     }
 
     private TrainTrackPathFinderOptions CreateOptions(
-        TrainTrackNodeDirection? forcedEndDirection)
+        TrainTrackNodeDirection? forcedEndDirection,
+        Tile3f goal)
     {
         // Prevent the native near-goal singularity mode from limiting a
         // route to one direction/radius change. This is what enables
         // repeated left/right bends and true S-curves.
         return new TrainTrackPathFinderOptions(
+            preferredHeight: GetPreferredRampHeight(m_anchor, goal),
             forcedStartDirectionA: m_forcedStartDirection,
             forcedEndDirectionA: forcedEndDirection,
             buildDirection: TrainTrackTrajectoryDirection.Bidirectional,
             flags: CreateHighwayPathFinderFlags());
+    }
+
+    private static HeightTilesI? GetPreferredRampHeight(
+        Tile3f start,
+        Tile3f goal)
+    {
+        var startHeight = start.Tile3iRounded.Z;
+        var goalHeight = goal.Tile3iRounded.Z;
+        return startHeight == goalHeight
+            ? (HeightTilesI?)null
+            : new HeightTilesI(Math.Max(startHeight, goalHeight));
     }
 
     private static TrainTrackPathFinderFlags CreateHighwayPathFinderFlags()
@@ -1255,9 +1349,17 @@ public sealed class GroundRoadDragController :
         // The native terrain-ramp library connects its G8 (12.5%) and G4
         // (25%) pieces, so both grades remain available and the planner can
         // choose the gentler option when enough horizontal space exists.
+        // Its collision pass still hard-codes the train track's 0.25-metre
+        // ground tolerance, which rejects normally terraced dumped terrain
+        // before our four-tile road-surface validator can apply the highway's
+        // one-tile follow range. Let the planner explore those candidates;
+        // HasRoadSurfaceClearance then performs the stricter road-specific
+        // terrain, water, map-edge, entity, and existing-highway checks before
+        // any preview can be committed.
         // GoalMustBeFlat is retained for engine versions that honor it; the
         // v0.8.6c fallback above additionally forces and verifies G0.
-        return TrainTrackPathFinderFlags.GoalMustBeFlat |
+        return TrainTrackPathFinderFlags.IgnoreCollisions |
+               TrainTrackPathFinderFlags.GoalMustBeFlat |
                TrainTrackPathFinderFlags.AlternativeMode;
     }
 
@@ -1451,7 +1553,8 @@ public sealed class GroundRoadDragController :
                             worldEnd,
                             worldStartDirection,
                             worldEndDirection,
-                            piece.Transform.IsReflected))
+                            piece.Transform.IsReflected,
+                            allowAirBelow: true))
                     {
                         return false;
                     }
@@ -1467,7 +1570,8 @@ public sealed class GroundRoadDragController :
         Tile3f end,
         RelTile3f startDirection,
         RelTile3f endDirection,
-        bool isReflected)
+        bool isReflected,
+        bool allowAirBelow)
     {
         var triangles = CreateRoadSurfaceStripTriangles(
             start,
@@ -1478,11 +1582,13 @@ public sealed class GroundRoadDragController :
         return DoesRoadSurfaceTriangleMatchTerrain(
                    triangles.FirstTriangleFirst,
                    triangles.FirstTriangleSecond,
-                   triangles.FirstTriangleThird) &&
+                   triangles.FirstTriangleThird,
+                   allowAirBelow) &&
                DoesRoadSurfaceTriangleMatchTerrain(
                    triangles.SecondTriangleFirst,
                    triangles.SecondTriangleSecond,
-                   triangles.SecondTriangleThird);
+                   triangles.SecondTriangleThird,
+                   allowAirBelow);
     }
 
     private static (
@@ -1561,7 +1667,8 @@ public sealed class GroundRoadDragController :
     private bool DoesRoadSurfaceTriangleMatchTerrain(
         RoadSurfaceVertex first,
         RoadSurfaceVertex second,
-        RoadSurfaceVertex third)
+        RoadSurfaceVertex third,
+        bool allowAirBelow)
     {
         if (!TryCreateRoadSurfacePlane(
                 first,
@@ -1601,7 +1708,8 @@ public sealed class GroundRoadDragController :
                         second,
                         third,
                         roadPlane,
-                        cell))
+                        cell,
+                        allowAirBelow))
                 {
                     return false;
                 }
@@ -1616,7 +1724,8 @@ public sealed class GroundRoadDragController :
         RoadSurfaceVertex second,
         RoadSurfaceVertex third,
         RoadSurfacePlane roadPlane,
-        Tile2i cell)
+        Tile2i cell,
+        bool allowAirBelow)
     {
         var bottomLeft = cell;
         var bottomRight = cell + new RelTile2i(1, 0);
@@ -1645,7 +1754,8 @@ public sealed class GroundRoadDragController :
             second,
             third,
             roadPlane,
-            terrain);
+            terrain,
+            allowAirBelow);
     }
 
     private static bool DoesBilinearTerrainCellMatchRoadTriangle(
@@ -1656,7 +1766,8 @@ public sealed class GroundRoadDragController :
         HeightTilesF bottomLeft,
         HeightTilesF bottomRight,
         HeightTilesF topLeft,
-        HeightTilesF topRight)
+        HeightTilesF topRight,
+        bool allowAirBelow)
     {
         var firstVertex = new RoadSurfaceVertex(first);
         var secondVertex = new RoadSurfaceVertex(second);
@@ -1685,7 +1796,8 @@ public sealed class GroundRoadDragController :
                 bottomLeft,
                 bottomRight,
                 topLeft,
-                topRight));
+                topRight),
+            allowAirBelow);
     }
 
     private static bool DoesBilinearTerrainCellMatchRoadTriangleCore(
@@ -1693,23 +1805,27 @@ public sealed class GroundRoadDragController :
         RoadSurfaceVertex second,
         RoadSurfaceVertex third,
         RoadSurfacePlane roadPlane,
-        BilinearTerrainPatch terrain)
+        BilinearTerrainPatch terrain,
+        bool allowAirBelow)
     {
         return DoesClippedTriangleEdgeMatchTerrain(
                    first.Xy,
                    second.Xy,
                    terrain,
-                   roadPlane) &&
+                   roadPlane,
+                   allowAirBelow) &&
                DoesClippedTriangleEdgeMatchTerrain(
                    second.Xy,
                    third.Xy,
                    terrain,
-                   roadPlane) &&
+                   roadPlane,
+                   allowAirBelow) &&
                DoesClippedTriangleEdgeMatchTerrain(
                    third.Xy,
                    first.Xy,
                    terrain,
-                   roadPlane) &&
+                   roadPlane,
+                   allowAirBelow) &&
                DoesClippedCellEdgeMatchTerrain(
                    new SurfacePoint2d(terrain.Cell.X, terrain.Cell.Y),
                    new SurfacePoint2d(terrain.Cell.X + 1.0, terrain.Cell.Y),
@@ -1717,7 +1833,8 @@ public sealed class GroundRoadDragController :
                    second,
                    third,
                    terrain,
-                   roadPlane) &&
+                   roadPlane,
+                   allowAirBelow) &&
                DoesClippedCellEdgeMatchTerrain(
                    new SurfacePoint2d(
                        terrain.Cell.X + 1.0,
@@ -1729,7 +1846,8 @@ public sealed class GroundRoadDragController :
                    second,
                    third,
                    terrain,
-                   roadPlane) &&
+                   roadPlane,
+                   allowAirBelow) &&
                DoesClippedCellEdgeMatchTerrain(
                    new SurfacePoint2d(
                        terrain.Cell.X + 1.0,
@@ -1741,7 +1859,8 @@ public sealed class GroundRoadDragController :
                    second,
                    third,
                    terrain,
-                   roadPlane) &&
+                   roadPlane,
+                   allowAirBelow) &&
                DoesClippedCellEdgeMatchTerrain(
                    new SurfacePoint2d(
                        terrain.Cell.X,
@@ -1751,14 +1870,16 @@ public sealed class GroundRoadDragController :
                    second,
                    third,
                    terrain,
-                   roadPlane);
+                   roadPlane,
+                   allowAirBelow);
     }
 
     private static bool DoesClippedTriangleEdgeMatchTerrain(
         SurfacePoint2d start,
         SurfacePoint2d end,
         BilinearTerrainPatch terrain,
-        RoadSurfacePlane roadPlane)
+        RoadSurfacePlane roadPlane,
+        bool allowAirBelow)
     {
         return !TryClipSegmentToTerrainCell(
                    start,
@@ -1770,7 +1891,8 @@ public sealed class GroundRoadDragController :
                    terrain,
                    roadPlane,
                    clippedStart,
-                   clippedEnd);
+                   clippedEnd,
+                   allowAirBelow);
     }
 
     private static bool DoesClippedCellEdgeMatchTerrain(
@@ -1780,7 +1902,8 @@ public sealed class GroundRoadDragController :
         RoadSurfaceVertex second,
         RoadSurfaceVertex third,
         BilinearTerrainPatch terrain,
-        RoadSurfacePlane roadPlane)
+        RoadSurfacePlane roadPlane,
+        bool allowAirBelow)
     {
         return !TryClipSegmentToRoadTriangle(
                    start,
@@ -1794,14 +1917,16 @@ public sealed class GroundRoadDragController :
                    terrain,
                    roadPlane,
                    clippedStart,
-                   clippedEnd);
+                   clippedEnd,
+                   allowAirBelow);
     }
 
     private static bool DoesTerrainRoadDifferenceStayWithinToleranceOnAffineLine(
         BilinearTerrainPatch terrain,
         RoadSurfacePlane roadPlane,
         SurfacePoint2d lineStart,
-        SurfacePoint2d lineEnd)
+        SurfacePoint2d lineEnd,
+        bool allowAirBelow)
     {
         var differenceStart = terrain.GetHeight(lineStart) -
             roadPlane.GetHeight(lineStart);
@@ -1810,9 +1935,15 @@ public sealed class GroundRoadDragController :
             roadPlane.GetHeight(lineStart.Lerp(lineEnd, 0.5));
         var differenceEnd = terrain.GetHeight(lineEnd) -
             roadPlane.GetHeight(lineEnd);
-        if (!IsTerrainRoadHeightDifferenceWithinTolerance(differenceStart) ||
-            !IsTerrainRoadHeightDifferenceWithinTolerance(differenceMiddle) ||
-            !IsTerrainRoadHeightDifferenceWithinTolerance(differenceEnd))
+        if (!IsTerrainRoadHeightDifferenceWithinTolerance(
+                differenceStart,
+                allowAirBelow) ||
+            !IsTerrainRoadHeightDifferenceWithinTolerance(
+                differenceMiddle,
+                allowAirBelow) ||
+            !IsTerrainRoadHeightDifferenceWithinTolerance(
+                differenceEnd,
+                allowAirBelow))
         {
             return false;
         }
@@ -1834,7 +1965,8 @@ public sealed class GroundRoadDragController :
         var stationaryPoint = lineStart.Lerp(lineEnd, stationaryProgress);
         return IsTerrainRoadHeightDifferenceWithinTolerance(
             terrain.GetHeight(stationaryPoint) -
-            roadPlane.GetHeight(stationaryPoint));
+            roadPlane.GetHeight(stationaryPoint),
+            allowAirBelow);
     }
 
     private static bool TryCreateRoadSurfacePlane(
@@ -2112,10 +2244,18 @@ public sealed class GroundRoadDragController :
     }
 
     private static bool IsTerrainRoadHeightDifferenceWithinTolerance(
-        double difference)
+        double difference,
+        bool allowAirBelow)
     {
-        return Math.Abs(difference) <=
-            TrainTrackConstants.GROUND_TOLERANCE.Value.ToDouble() + 1e-8;
+        // Highway supports make dry air below either a flat or an inclined
+        // deck valid. Terrain above the thin asphalt surface is a different
+        // case: keep it below the visible top so the crest cannot disappear
+        // into a dumped plateau.
+        var maximumSupportDepth = allowAirBelow
+            ? TrainTrackPillarProto.MAX_PILLAR_HEIGHT.Value
+            : GroundSupportToleranceTiles;
+        return difference <= TerrainPenetrationToleranceTiles + 1e-8 &&
+               difference >= -maximumSupportDepth - 1e-8;
     }
 
     private bool HasRoadSurfaceEntityClearance(TrainTrackPlan plan)
@@ -3022,7 +3162,7 @@ public sealed class GroundRoadDragController :
         return m_trackPathFinder.GetGoalFromTile(
             rawGoal,
             m_anchor,
-            CreateOptions(endDirection));
+            CreateOptions(endDirection, rawGoal));
     }
 
     private bool TryGetClosestOpenPort(
@@ -3041,13 +3181,17 @@ public sealed class GroundRoadDragController :
         HighwayPort port,
         Tile3i cursor)
     {
-        return port.Center.Xy.IsNear(
-                   cursor.Xy,
-                   PortSnapSearchRange) ||
+        return port.Center.Xy.DistanceSqrTo(cursor.Xy) <=
+                   PortSnapMaxDistanceSquared ||
                port.HasExtendedSnapArea &&
                port.SnapAnchor.Xy.IsNear(
                    cursor.Xy,
-                   ExtendedPortSnapAnchorRange);
+                   ExtendedPortSnapAnchorRange) ||
+               TryGetHighwayEndExtensionSnapScore(
+                   port,
+                   cursor,
+                   out _,
+                   out _);
     }
 
     private static bool TrySelectClosestOpenPort(
@@ -3059,18 +3203,21 @@ public sealed class GroundRoadDragController :
     {
         var found = false;
         var bestPriority = int.MaxValue;
-        var bestDistance = long.MaxValue;
+        var bestPrimaryDistance = double.MaxValue;
+        var bestSecondaryDistance = double.MaxValue;
         result = default;
         foreach (var port in ports)
         {
             var cursorDistance = port.Center.Xy.DistanceSqrTo(cursor.Xy);
             int priority;
-            long distance;
+            double primaryDistance;
+            double secondaryDistance;
             if (cursorDistance <= PortSnapMaxDistanceSquared)
             {
                 // Pointing directly at a physical port always wins.
                 priority = 0;
-                distance = cursorDistance;
+                primaryDistance = cursorDistance;
+                secondaryDistance = 0.0;
             }
             else if (port.HasExtendedSnapArea &&
                      port.SnapAnchor.Xy.DistanceSqrTo(cursor.Xy) <=
@@ -3081,10 +3228,26 @@ public sealed class GroundRoadDragController :
                 // anchor; before the first pivot, prefer the cursor-nearest
                 // arm and retain deterministic discovery order on ties.
                 priority = 1;
-                distance = hasStart
+                primaryDistance = hasStart
                     ? port.Center.Xy.DistanceSqrTo(
                         anchor.Tile3iRounded.Xy)
                     : cursorDistance;
+                secondaryDistance = 0.0;
+            }
+            else if (!hasStart &&
+                     TryGetHighwayEndExtensionSnapScore(
+                         port,
+                         cursor,
+                         out var longitudinalDistance,
+                         out var lateralDistance))
+            {
+                // A first click well beyond an ordinary open highway end is
+                // interpreted as continuing that highway. Restricting this
+                // to its outward corridor keeps both ends of even a one-tile
+                // segment unambiguous and avoids grabbing parallel roads.
+                priority = 2;
+                primaryDistance = lateralDistance;
+                secondaryDistance = longitudinalDistance;
             }
             else
             {
@@ -3093,18 +3256,52 @@ public sealed class GroundRoadDragController :
 
             if (found &&
                 (priority > bestPriority ||
-                 priority == bestPriority && distance >= bestDistance))
+                 priority == bestPriority &&
+                 (primaryDistance > bestPrimaryDistance + 1e-8 ||
+                  Math.Abs(primaryDistance - bestPrimaryDistance) <= 1e-8 &&
+                  secondaryDistance >= bestSecondaryDistance)))
             {
                 continue;
             }
 
             found = true;
             bestPriority = priority;
-            bestDistance = distance;
+            bestPrimaryDistance = primaryDistance;
+            bestSecondaryDistance = secondaryDistance;
             result = port;
         }
 
         return found;
+    }
+
+    private static bool TryGetHighwayEndExtensionSnapScore(
+        HighwayPort port,
+        Tile3i cursor,
+        out double longitudinalDistance,
+        out double lateralDistance)
+    {
+        longitudinalDistance = 0.0;
+        lateralDistance = 0.0;
+        if (port.HasExtendedSnapArea)
+        {
+            return false;
+        }
+
+        var outward = port.OutboundNode.Direction.Direction.Vector2f.Normalized;
+        if (outward.X.IsZero && outward.Y.IsZero)
+        {
+            return false;
+        }
+
+        var deltaX = cursor.X - port.Center.X;
+        var deltaY = cursor.Y - port.Center.Y;
+        var outwardX = outward.X.ToDouble();
+        var outwardY = outward.Y.ToDouble();
+        longitudinalDistance = deltaX * outwardX + deltaY * outwardY;
+        lateralDistance = Math.Abs(deltaX * outwardY - deltaY * outwardX);
+        return longitudinalDistance >= 0.0 &&
+               longitudinalDistance <= HighwayEndExtensionSnapLength &&
+               lateralDistance <= HighwayEndExtensionSnapHalfWidth;
     }
 
     private static bool AreSamePort(
@@ -3465,6 +3662,7 @@ public sealed class GroundRoadDragController :
         var pieceCount = m_pieces.Count;
         var configs =
             new ImmutableArrayBuilder<EntityConfigData>(pieceCount);
+        var supportedPieceCount = 0;
         for (var index = 0; index < pieceCount; index++)
         {
             var piece = m_pieces[index];
@@ -3474,17 +3672,27 @@ public sealed class GroundRoadDragController :
             {
                 Transform = piece.Transform
             };
+            if (ShouldCompleteImmediatelyOnSupports(piece))
+            {
+                supportedPieceCount++;
+            }
         }
 
         // Adjacent pieces intentionally share their exact seam. The train
         // planner has already validated the route; generic batch validation
         // must not discard alternating curve/straight pieces because of that
         // planned overlap.
+        // Keep the route in one command. If even one flat piece needs visible
+        // supports, a construction truck cannot reach that piece before the
+        // road itself exists, so the already-prevalidated connected plan must
+        // complete together. Ground-only plans retain their normal costs.
+        var completePlanImmediately =
+            ShouldCompletePlanImmediately(supportedPieceCount);
         var command = m_inputScheduler.ScheduleInputCmd(
             new BatchCreateStaticEntitiesCmd(
                 configs.GetImmutableArrayAndClear(),
                 BuildMiniZippersMode.Never,
-                isFree: false,
+                isFree: completePlanImmediately,
                 allowValidationSuppression: true,
                 applyConfiguration: false));
 
@@ -3497,8 +3705,86 @@ public sealed class GroundRoadDragController :
 
         Log.Info(
             $"GroundRoads: scheduled {pieceCount} train-planned highway " +
-            $"pieces (continue: {continueAfterBuild}).");
+            $"pieces, including {supportedPieceCount} supported G0 pieces; " +
+            $"whole-plan immediate completion: " +
+            $"{completePlanImmediately} " +
+            $"(continue: {continueAfterBuild}).");
         return true;
+    }
+
+    private static bool ShouldCompletePlanImmediately(
+        int supportedFlatPieceCount)
+    {
+        return supportedFlatPieceCount > 0;
+    }
+
+    private bool ShouldCompleteImmediatelyOnSupports(Piece piece)
+    {
+        if (piece.Proto.SourceTrackProto.HasElevationChange)
+        {
+            // G4/G8 prototypes already have EntityCosts.None because a truck
+            // cannot deliver into the middle of an unfinished ramp.
+            return false;
+        }
+
+        var maximumClearance = 0.0;
+        foreach (var local in GetSupportClearanceLocalSamples(
+                     piece.Proto.LanesTrajectories))
+        {
+            var world = piece.Proto.Layout
+                .TransformPoint_RelToCenterTile(
+                    local,
+                    piece.Transform);
+            var terrainTile = new Tile2i(
+                world.X.ToIntFloored(),
+                world.Y.ToIntFloored());
+            if (!m_terrainManager.IsValidCoord(terrainTile))
+            {
+                continue;
+            }
+
+            maximumClearance = Math.Max(
+                maximumClearance,
+                world.Z.ToDouble() -
+                m_terrainManager.GetHeight(world.Xy).Value.ToDouble());
+        }
+
+        return ShouldCompleteFlatPieceImmediately(maximumClearance);
+    }
+
+    private static IEnumerable<RelTile3f>
+        GetSupportClearanceLocalSamples(
+            ImmutableArray<RoadLaneTrajectory> lanes)
+    {
+        // Each lane mesh is two tiles wide. Sample its centre and both outer
+        // edges; doing this for both opposing lanes covers the complete
+        // four-tile highway, including transverse slopes.
+        foreach (var lane in lanes)
+        {
+            for (var index = 0;
+                 index < lane.LaneCenterSamples.Length;
+                 index++)
+            {
+                var center = lane.LaneCenterSamples[index];
+                var lateral = lane.LaneDirectionSamples[index]
+                    .Normalized.Xy.RightOrthogonalVector;
+                for (var lateralOffset = -1;
+                     lateralOffset <= 1;
+                     lateralOffset++)
+                {
+                    yield return center + new RelTile3f(
+                        lateralOffset * lateral,
+                        Fix32.Zero);
+                }
+            }
+        }
+    }
+
+    private static bool ShouldCompleteFlatPieceImmediately(
+        double maximumTerrainClearance)
+    {
+        return maximumTerrainClearance >=
+               MinimumVisibleSupportHeightTiles - 1e-8;
     }
 
     private void ResetPlan()
@@ -3590,8 +3876,9 @@ public sealed class GroundRoadToolbarRegistrator : IHotReloadUi
             "GroundRoads_HighwayTool_Description",
             "Baut Autobahnen mit dem Kurven- und Pivotplaner des " +
             "Schienen-DLC. Unterschiedliche Punkthöhen erzeugen sanfte " +
-            "Geländerampen; die gesamte Fahrbahn muss dabei auf dem " +
-            "Gelände aufliegen. Linksklick setzt Punkte, Doppelklick baut, " +
+            "Geländerampen. E hebt die Fahrbahn an, Q senkt sie ab; " +
+            "gestützte Abschnitte erhalten Betonpfeiler. Linksklick setzt " +
+            "Punkte, Doppelklick baut, " +
             "Rechtsklick bricht ab. Shift beim Doppelklick setzt am " +
             "Endpunkt nahtlos fort. Der Verkehrsdirektor verbindet " +
             "Fahrzeuge automatisch mit der nächsten sinnvollen Autobahn.",
