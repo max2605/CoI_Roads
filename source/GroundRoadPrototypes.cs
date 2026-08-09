@@ -602,8 +602,8 @@ internal static class GroundRoadsData
                 Proto.CreateStr(
                     GroundRoadIds.ToolbarCategory,
                     "Autobahnen",
-                    "Schienenartig geplante Autobahnen mit automatischer " +
-                    "Zufahrt durch den Verkehrsdirektor."),
+                    "Schienenartig geplante Autobahnen mit Geländerampen " +
+                    "und automatischer Zufahrt durch den Verkehrsdirektor."),
                 order: 100f,
                 iconPath: RoadIcon,
                 parentCategory: vehiclesCategory));
@@ -955,10 +955,11 @@ internal static class GroundRoadsData
             s_maxRoadVehicleSpeedPerTick);
 
         Log.Info(
-            "GroundRoads: registered the train-planned highway library and " +
-            "automatic traffic-director access. T/+ intersections and the " +
-            "roundabout are available. Historical ramp IDs remain hidden " +
-            "for save compatibility. Road speed cap is " +
+            "GroundRoads: registered the train-planned highway library " +
+            "including terrain elevation pieces and automatic " +
+            "traffic-director access. T/+ intersections and the roundabout " +
+            "are available. Historical on/off-ramp IDs remain hidden for " +
+            "save compatibility. Road speed cap is " +
             $"{s_maxRoadVehicleSpeedPerTick} per tick.");
     }
 
@@ -992,8 +993,7 @@ internal static class GroundRoadsData
         foreach (var track in registrator.PrototypesDb.All<TrainTrackProto>()
                      .Where(x => !x.IsObsolete &&
                                  !x.IgnoreInPathFinder &&
-                                 x.IsElevated &&
-                                 !x.HasElevationChange))
+                                 x.IsElevated))
         {
             var trajectory = track.TrajectoryData;
             var id = new StaticEntityProto.ID(
@@ -1052,7 +1052,7 @@ internal static class GroundRoadsData
             new RoadLaneSpec(
                 trajectory.TrajectoryCurve.ReverseControlPoints(),
                 curveOffset,
-                trajectory.HeightCurve,
+                ReverseHeightCurve(trajectory.HeightCurve),
                 BasicLane,
                 BasicLane));
         var laneData = ImmutableArray.Create(
@@ -1073,6 +1073,13 @@ internal static class GroundRoadsData
                 BasicLane,
                 reverse.SegmentLengthsPrefixSums.Last));
         var laneTrajectories = ImmutableArray.Create(forward, reverse);
+        var constructionCosts =
+            ShouldUseConstructionMaterialsForHighwaySegment(
+                track.HasElevationChange)
+                ? HighwayConstructionCosts.CreateForLength(
+                    registrator,
+                    forward.SegmentLengthsPrefixSums.Last.Value.ToDouble())
+                : EntityCosts.None;
 
         registrator.PrototypesDb.Add(
             new HighwaySegmentProto(
@@ -1080,9 +1087,10 @@ internal static class GroundRoadsData
                 Proto.CreateStr(
                     id,
                     "Autobahnsegment",
-                    "Internes, vom Schienenplaner erzeugtes Autobahnsegment."),
+                    "Vom Schienenplaner erzeugtes Asphaltsegment mit " +
+                    "Kiesunterbau."),
                 CreateMinimalHighwayLayout(track.Layout),
-                EntityCosts.None,
+                constructionCosts,
                 track.MaxSpeedTilesPerTick.Min(
                     s_maxRoadVehicleSpeedPerTick),
                 lanes,
@@ -1095,6 +1103,16 @@ internal static class GroundRoadsData
                     RoadIcon),
                 track,
                 correctsReflectedHandedness));
+    }
+
+    private static bool ShouldUseConstructionMaterialsForHighwaySegment(
+        bool hasElevationChange)
+    {
+        // A construction site in the middle of an unfinished ramp cannot be
+        // reached by trucks: the road needed to climb there is precisely the
+        // entity still waiting for delivery. Complete only those G4/G8 pieces
+        // immediately so they open access to the paid horizontal continuation.
+        return !hasElevationChange;
     }
 
     private static RoadLaneTrajectory ReverseLaneTrajectory(
@@ -1115,6 +1133,31 @@ internal static class GroundRoadsData
             reversedPositions,
             directions.GetImmutableArrayAndClear(),
             ComputeLengthPrefixes(reversedPositions));
+    }
+
+    private static CubicBezierCurve2f ReverseHeightCurve(
+        CubicBezierCurve2f source)
+    {
+        // Height curves use X as distance along the directed XY trajectory.
+        // Reversing only the control-point order would make X decrease and is
+        // therefore not a valid height function. Mirror X around the curve's
+        // extent while reversing the height samples instead.
+        var points = source.ControlPoints;
+        var mirroredX = points.First.X + points.Last.X;
+        return new CubicBezierCurve2f(
+            ImmutableArray.Create(
+                new Vector2f(
+                    mirroredX - points[3].X,
+                    points[3].Y),
+                new Vector2f(
+                    mirroredX - points[2].X,
+                    points[2].Y),
+                new Vector2f(
+                    mirroredX - points[1].X,
+                    points[1].Y),
+                new Vector2f(
+                    mirroredX - points[0].X,
+                    points[0].Y)));
     }
 
     private static void CreateHighwayLaneTrajectories(
@@ -1147,7 +1190,8 @@ internal static class GroundRoadsData
                     ? GetExactDirection(source.EndDirection)
                     : source.DirectionsNormalized[index];
             var lateral =
-                laneOffsetTiles * direction.Xy.RightOrthogonalVector;
+                laneOffsetTiles *
+                direction.Xy.Normalized.RightOrthogonalVector;
             forwardPositions[index] =
                 source.Positions[index] + new RelTile3f(lateral, Fix32.Zero);
             forwardDirections[index] = direction;
@@ -1160,7 +1204,8 @@ internal static class GroundRoadsData
                     : source.DirectionsNormalized[sourceIndex];
             var reverseDirection = -sourceDirection;
             var reverseLateral =
-                laneOffsetTiles * reverseDirection.Xy.RightOrthogonalVector;
+                laneOffsetTiles *
+                reverseDirection.Xy.Normalized.RightOrthogonalVector;
             reversePositions[index] =
                 source.Positions[sourceIndex] +
                 new RelTile3f(reverseLateral, Fix32.Zero);
@@ -1184,9 +1229,13 @@ internal static class GroundRoadsData
     private static RelTile3f GetExactDirection(
         TrainTrackNodeDirection direction)
     {
+        var grade = direction.GradeFactor == TrainTrackGradeFactor.G0
+            ? Fix32.Zero
+            : Fix32.One / (int)direction.GradeFactor;
         return new RelTile3f(
-            new RelTile2f(direction.Direction.Vector2f.Normalized),
-            Fix32.Zero);
+                new RelTile2f(direction.Direction.Vector2f.Normalized),
+                grade)
+            .Normalized;
     }
 
     private static EntityLayout CreateMinimalHighwayLayout(
@@ -1196,7 +1245,9 @@ internal static class GroundRoadsData
         // overlaps between adjacent pieces produced by the train planner.
         // A fully copied train footprint therefore rejects alternating road
         // pieces. One neutral occupied tile near the piece centre keeps the
-        // entity valid and saveable without colliding at every seam.
+        // entity valid and saveable without colliding at every seam. The
+        // placement controller separately samples terrain below the full
+        // four-tile asphalt width before a plan can be committed.
         var centerX = (source.CoreMin.X + source.CoreMax.X) / 2;
         var centerY = (source.CoreMin.Y + source.CoreMax.Y) / 2;
         var selectedCoord = source.LayoutTiles.IsEmpty

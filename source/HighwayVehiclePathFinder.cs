@@ -402,7 +402,14 @@ public sealed class HighwayVehiclePathFinder : IVehiclePathFinder
                 m_directCost = ComputePathLength(foundPath);
                 m_resultGoal = foundGoal;
 
-                if (!m_trafficDirector.TryCreateRoutes(
+                // Terrain edits can invalidate many vehicle paths at once.
+                // A vehicle that is already on the participating highway
+                // network must keep the native route from its current road
+                // node instead of planning a terrain exit and a fresh
+                // highway entry on every retry.
+                if (IsVehicleOnParticipatingHighway(
+                        m_originalTask.Vehicle) ||
+                    !m_trafficDirector.TryCreateRoutes(
                         m_originalTask.Vehicle,
                         m_directTask.StartTiles,
                         m_directTask.GoalTiles,
@@ -475,10 +482,6 @@ public sealed class HighwayVehiclePathFinder : IVehiclePathFinder
                     foundPath);
                 m_resultGoal = foundGoal;
                 m_phase = Phase.Ready;
-                Log.Info(
-                    $"GroundRoads: vehicle #{m_originalTask.Vehicle.Id} " +
-                    $"uses highway ({highwayCost} vs direct " +
-                    $"{m_directCost}, equal-cost preference enabled).");
                 completedResult = PathFinderResult.PathFound;
                 return true;
 
@@ -617,21 +620,30 @@ public sealed class HighwayVehiclePathFinder : IVehiclePathFinder
 
     private void SelectDirectResult(string reason)
     {
+        _ = reason;
         m_resultPath = m_directPath;
         m_phase = Phase.Ready;
+    }
 
-        // Falling back without any cost-effective candidates is normal for
-        // short trips and stays silent. If candidates existed but every
-        // native access leg failed, keep one compact diagnostic per route so
-        // a destination-specific regression can be identified from the log.
-        if (m_candidates != null && m_candidates.Count > 0)
+    private static bool IsVehicleOnParticipatingHighway(
+        IPathFindingVehicle pathFindingVehicle)
+    {
+        if (pathFindingVehicle is not Vehicle vehicle ||
+            !vehicle.IsDrivingOnRoad ||
+            !vehicle.CurrentRoadEntity.HasValue)
         {
-            Log.Info(
-                $"GroundRoads: vehicle #{m_originalTask.Vehicle.Id} falls " +
-                $"back to its native route after testing " +
-                $"{m_nextCandidateIndex}/{m_candidates.Count} highway " +
-                $"candidates ({reason}).");
+            return false;
         }
+
+        return IsParticipatingHighwayProto(
+            vehicle.CurrentRoadEntity.Value.RoadProto as
+                IHighwayNetworkProto);
+    }
+
+    private static bool IsParticipatingHighwayProto(
+        IHighwayNetworkProto highwayProto)
+    {
+        return highwayProto?.ParticipatesInHighwayNetwork == true;
     }
 
     private static IVehiclePathSegment JoinHighwayPath(

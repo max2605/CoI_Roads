@@ -1,0 +1,145 @@
+Highway Roads - Changelog
+=========================
+
+Version 0.4.1 - 2026-08-07
+--------------------------
+
+Added
+- Added the same configurable RaiseUp/LowerDown controls used by the train
+  construction tool (E/Q by default), including its up/down toolbox buttons.
+- Added concrete highway supports at native train-track pillar candidate
+  positions for inclined and raised flat road pieces.
+
+Changed
+- Highway cursor elevation now moves in one-tile steps from 0 to the native
+  six-tile train-pillar limit.
+- Raised G0 surfaces may span lower dry terrain. Inclined G4/G8 prototypes are
+  already cost-free. When one connected, prevalidated plan contains at least
+  one visibly supported flat G0 piece, the entire plan completes immediately as
+  a single atomic batch. Purely near-ground plans keep their normal gravel and
+  asphalt costs.
+
+Fixed
+- Terrain may no longer bury the thin highway deck at the upper end of a ramp.
+  A small 0.02-tile penetration allowance keeps asphalt and edge markings
+  visible; a higher plateau requires raising the preview.
+
+
+Version 0.4.0 - 2026-08-06
+--------------------------
+
+Added
+- Added asphalt as a storable and transportable loose product.
+- Added an asphalt recipe for Industrial Mixers I and II: 19 gravel and
+  1 heavy oil produce 20 asphalt.
+- Highway construction now uses the native construction-site and truck-delivery
+  system instead of placing completed roads for free.
+- Paid horizontal road costs scale with the actual segment length.
+- T-junctions, cross intersections, and roundabouts use area-based construction
+  costs.
+
+Changed
+- Each rounded-up horizontal tile of highway requires 2 gravel for the
+  foundation and 1 asphalt for the paved surface.
+- Flat G0 road surfaces remain terrain-bound within one height tile, while
+  genuine G4/G8 ramp pieces may span lower dry terrain like rails and conveyors.
+- Elevation planning prefers the higher endpoint so ramps rise before a dumped
+  embankment instead of cutting through it.
+- Inclined G4/G8 sub-pieces complete immediately so material trucks are not
+  deadlocked at an unreachable construction site halfway up the unfinished ramp;
+  horizontal highway pieces and nodes retain their normal material costs.
+- Additional highway-exit searches are limited to the four best candidates.
+- Only completed highway-network entities provide routing, speed, and
+  maintenance benefits.
+
+Fixed
+- Terraced highway ramps are no longer rejected early by the train planner's
+  narrower terrain tolerance before the highway corridor can be validated.
+- A first click 10-20 tiles beyond a free highway end now continues that road;
+  the directional 24-tile corridor also disambiguates one-tile segments.
+- Dumped-ground ramps are no longer rejected merely because lower terrain lies
+  more than one tile below a genuinely inclined G4/G8 road piece.
+- Highway construction no longer stops at the first inclined piece because its
+  delivery target cannot be reached before that same piece is completed.
+
+
+Version 0.3.4 - 2026-08-06
+--------------------------
+
+Fixed
+- Stabilized direct snapping to visible junction and roundabout bodies.
+- A direct click near an individual arm now reliably takes priority over
+  automatic arm selection.
+- Roundabout collision checks now account for the longer merge and exit area,
+  preventing valid connections from being rejected.
+- Vehicles already traveling on a highway retain their current native road
+  route when terrain work triggers route updates.
+- Removed per-vehicle, per-simulation-step routing log messages.
+- Limited additional route searches to the best candidates, substantially
+  improving performance during active excavation and dumping.
+
+
+Version 0.3.1 - 2026-08-06
+--------------------------
+
+Added
+- Added terrain-following highway ramps for elevation changes.
+- Added native 12.5% and 25% grades, preferring the gentler grade when enough
+  space is available.
+- Added horizontal transitions at ramp starts, ramp ends, pivots, and network
+  connections.
+- Added full-width terrain-support validation for the four-tile road corridor.
+- Added checks that reject unsupported floating roads, invalid water crossings,
+  map-edge violations, and occupied terrain.
+- Vehicles now follow three-dimensional lanes through curves and elevation
+  changes.
+- Added automatic flat-approach retries at free road endpoints.
+
+
+Version 0.2.0 - 2026-08-05
+--------------------------
+
+Added
+- Added three-arm T-junctions.
+- Added four-arm cross intersections with straight, left-turn, and right-turn
+  connections.
+- Added four-arm roundabouts for right-hand traffic.
+- Added all 16 placement directions in 22.5-degree increments.
+- Added exact snapping to free highway-network ports.
+- Added automatic selection of a suitable free arm when clicking a junction or
+  roundabout body.
+- Added geometry smoke tests for roads, intersections, roundabouts, snapping,
+  routing, and collision validation.
+
+Changed
+- Replaced the former standalone ramp tool with the unified highway-network
+  construction system.
+- Extended automatic vehicle routing across intersections and roundabouts.
+
+
+Version 0.1.0 - 2026-08-05
+--------------------------
+
+Initial public release.
+
+Added
+- Added smoothly planned, two-way highways for road-capable vehicles.
+- Added multi-pivot construction with flowing curves, repeated S-bends, and
+  tangent-continuous extensions.
+- Added exact continuation from a completed endpoint with Shift-double-click.
+- Added automatic comparison between the normal game route and reachable
+  highway alternatives.
+- Added automatic entry to and exit from highways without separate ramp tools.
+- Added lane-following vehicle movement through curves.
+- Added a highway speed limit of up to 140% of a vehicle's normal maximum speed.
+- Reduced vehicle maintenance usage to 50% while driving on mod roads.
+- Added fallback to the normal game route when no suitable highway route exists.
+
+
+Compatibility
+-------------
+
+- Highway Roads 0.4.1 is verified for Captain of Industry 0.8.6 through 0.8.6c.
+- The mod can be added to existing saves.
+- Do not remove the mod from a save after Highway Roads entities have been built
+  and saved.
