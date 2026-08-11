@@ -225,7 +225,21 @@ try {
     }
 
     if (Test-Path -LiteralPath $archivePath) {
-        [System.IO.File]::Replace($temporaryPath, $archivePath, $null)
+        $replacementBackupPath = Join-Path $outputFullPath (
+            ".GroundRoads-$Version-COI.zip.{0}.bak" -f
+            [guid]::NewGuid().ToString('N'))
+        try {
+            [System.IO.File]::Replace(
+                $temporaryPath,
+                $archivePath,
+                $replacementBackupPath,
+                $true)
+        }
+        finally {
+            if (Test-Path -LiteralPath $replacementBackupPath) {
+                Remove-Item -LiteralPath $replacementBackupPath -Force
+            }
+        }
     }
     else {
         [System.IO.File]::Move($temporaryPath, $archivePath)
