@@ -14,7 +14,6 @@ using Mafi.Core.Roads;
 using Mafi.Core.Simulation;
 using Mafi.Core.Terrain;
 using Mafi.Core.Trains;
-using Mafi.Localization;
 using Mafi.Unity;
 using Mafi.Unity.InputControl;
 using Mafi.Unity.InputControl.Factory;
@@ -54,7 +53,7 @@ public sealed class GroundRoadDragController :
     private const double HighwayEndExtensionSnapHalfWidth = 3.0;
     private const int RoadSurfaceCollisionBucketSize = 8;
     private const double RoadSurfaceSampleSpacing = 0.5;
-    private const double RoadSurfaceCollisionRadius = 2.0;
+    private const double MaximumRoadSurfaceCollisionDistance = 4.0;
     private const double GroundSupportToleranceTiles = 1.0;
     private const double TerrainPenetrationToleranceTiles = 0.02;
     private const double MinimumVisibleSupportHeightTiles = 0.25;
@@ -87,6 +86,7 @@ public sealed class GroundRoadDragController :
         public readonly EntityId EntityId;
         public readonly bool AllowsStartAttachment;
         public readonly bool AllowsEndAttachment;
+        public readonly double HalfWidth;
 
         public RoadSurfaceSegment(
             double startX,
@@ -97,7 +97,8 @@ public sealed class GroundRoadDragController :
             double endZ,
             EntityId entityId,
             bool allowsStartAttachment,
-            bool allowsEndAttachment)
+            bool allowsEndAttachment,
+            double halfWidth = 1.0)
         {
             StartX = startX;
             StartY = startY;
@@ -108,6 +109,7 @@ public sealed class GroundRoadDragController :
             EntityId = entityId;
             AllowsStartAttachment = allowsStartAttachment;
             AllowsEndAttachment = allowsEndAttachment;
+            HalfWidth = halfWidth;
         }
     }
 
@@ -221,13 +223,17 @@ public sealed class GroundRoadDragController :
     private readonly IEntitiesManager m_entitiesManager;
     private readonly ISimLoopEvents m_simLoopEvents;
     private readonly Toolbox m_elevationToolbox;
-    private readonly Dictionary<(string TrackId, bool Reflected),
+    private readonly Dictionary<(
+        string TrackId,
+        bool Reflected,
+        HighwayTier Tier),
         HighwaySegmentProto> m_segmentsByTrackId;
     private readonly List<Piece> m_pieces = new();
     private readonly List<LayoutEntityPreview> m_previews = new();
     private readonly Lyst<HighwayPort> m_allOpenPorts = new();
     private readonly Lyst<HighwayPort> m_openPorts = new();
     private readonly Lyst<EntityId> m_roadSurfaceCollisionIds = new();
+    private IUnityInputController m_activeFacade;
 
     private bool m_isActive;
     private bool m_hasStart;
@@ -273,6 +279,7 @@ public sealed class GroundRoadDragController :
     private float m_lastConfirmationClickTime;
     private float m_pendingPrimaryClickTime;
     private float m_searchGoalStartedAt;
+    private HighwayTier m_selectedTier = HighwayTier.Standard;
     private Vector3 m_lastConfirmationScreenPosition;
     private Vector3 m_pendingPrimaryScreenPosition;
     private Vector3 m_primaryPressScreenPosition;
@@ -310,7 +317,8 @@ public sealed class GroundRoadDragController :
             .ToDictionary(
                 x => (
                     x.SourceTrackProto.Id.Value,
-                    x.CorrectsReflectedHandedness),
+                    x.CorrectsReflectedHandedness,
+                    x.Tier),
                 x => x);
         m_elevationToolbox = hud.CreateToolbox();
         m_elevationToolbox.AddEntry(
@@ -335,6 +343,7 @@ public sealed class GroundRoadDragController :
         }
 
         m_isActive = true;
+        m_activeFacade ??= this;
         // The toolbar itself is activated with Mouse0. Without a release
         // guard that same UI click becomes the first terrain anchor before
         // the pointer has even returned to the world.
@@ -351,7 +360,26 @@ public sealed class GroundRoadDragController :
         m_terrainCursor.Activate();
         m_terrainCursor.RelativeHeight = ThicknessTilesI.Zero;
         m_elevationToolbox.Show();
-        Log.Info("GroundRoads: train-planned highway tool activated.");
+        Log.Info(
+            $"GroundRoads: train-planned {m_selectedTier} highway tool " +
+            "activated.");
+    }
+
+    internal HighwayTier SelectedTier => m_selectedTier;
+
+    internal void SelectTier(HighwayTier tier)
+    {
+        if (m_isActive && m_selectedTier != tier)
+        {
+            Deactivate();
+        }
+
+        m_selectedTier = tier;
+    }
+
+    internal void SetActiveFacade(IUnityInputController facade)
+    {
+        m_activeFacade = facade;
     }
 
     public void Deactivate()
@@ -376,6 +404,7 @@ public sealed class GroundRoadDragController :
         }
         m_elevationToolbox.Hide();
         m_terrainCursor.Deactivate();
+        m_activeFacade = null;
     }
 
     public bool InputUpdate()
@@ -472,7 +501,8 @@ public sealed class GroundRoadDragController :
             }
             else
             {
-                m_inputManager.DeactivateController(this);
+                m_inputManager.DeactivateController(
+                    m_activeFacade ?? this);
                 Deactivate();
             }
 
@@ -697,6 +727,11 @@ public sealed class GroundRoadDragController :
         m_searchGoalPortIsOpen = false;
         foreach (var openPort in m_allOpenPorts)
         {
+            if (openPort.Tier != m_selectedTier)
+            {
+                continue;
+            }
+
             if (IsPortWithinSnapSearchRange(
                     openPort,
                     m_terrainCursor.Tile3i))
@@ -1220,7 +1255,7 @@ public sealed class GroundRoadDragController :
 
                 Log.Warning(
                     "GroundRoads: rejected a highway plan because an " +
-                    "endpoint port is unavailable, its full four-tile " +
+                    "endpoint port is unavailable, its full road-profile " +
                     "surface is buried by terrain, water/map bounds are " +
                     "crossed, or " +
                     "an entity intersects the corridor. Free the port, " +
@@ -1351,7 +1386,7 @@ public sealed class GroundRoadDragController :
         // choose the gentler option when enough horizontal space exists.
         // Its collision pass still hard-codes the train track's 0.25-metre
         // ground tolerance, which rejects normally terraced dumped terrain
-        // before our four-tile road-surface validator can apply the highway's
+        // before our full-width road-surface validator can apply the highway's
         // one-tile follow range. Let the planner explore those candidates;
         // HasRoadSurfaceClearance then performs the stricter road-specific
         // terrain, water, map-edge, entity, and existing-highway checks before
@@ -1477,7 +1512,7 @@ public sealed class GroundRoadDragController :
         {
             // An unrestricted search can already return a flat end. Count
             // that heading as the first attempted direction, then continue
-            // with the nearest alternatives when its four-tile corridor is
+            // with the nearest alternatives when its full-width corridor is
             // blocked.
             m_flatEndDirectionBaseIndex =
                 GetDirectionIndex(endNode.Direction);
@@ -1554,7 +1589,8 @@ public sealed class GroundRoadDragController :
                             worldStartDirection,
                             worldEndDirection,
                             piece.Transform.IsReflected,
-                            allowAirBelow: true))
+                            allowAirBelow: true,
+                            piece.Proto.VisualLaneWidthTiles / 2.0))
                     {
                         return false;
                     }
@@ -1571,14 +1607,16 @@ public sealed class GroundRoadDragController :
         RelTile3f startDirection,
         RelTile3f endDirection,
         bool isReflected,
-        bool allowAirBelow)
+        bool allowAirBelow,
+        double laneHalfWidthTiles)
     {
         var triangles = CreateRoadSurfaceStripTriangles(
             start,
             end,
             startDirection,
             endDirection,
-            isReflected);
+            isReflected,
+            laneHalfWidthTiles);
         return DoesRoadSurfaceTriangleMatchTerrain(
                    triangles.FirstTriangleFirst,
                    triangles.FirstTriangleSecond,
@@ -1605,10 +1643,34 @@ public sealed class GroundRoadDragController :
             RelTile3f endDirection,
             bool isReflected)
     {
+        return CreateRoadSurfaceStripTriangles(
+            start,
+            end,
+            startDirection,
+            endDirection,
+            isReflected,
+            laneHalfWidthTiles: 1.0);
+    }
+
+    private static (
+        RoadSurfaceVertex FirstTriangleFirst,
+        RoadSurfaceVertex FirstTriangleSecond,
+        RoadSurfaceVertex FirstTriangleThird,
+        RoadSurfaceVertex SecondTriangleFirst,
+        RoadSurfaceVertex SecondTriangleSecond,
+        RoadSurfaceVertex SecondTriangleThird)
+        CreateRoadSurfaceStripTriangles(
+            Tile3f start,
+            Tile3f end,
+            RelTile3f startDirection,
+            RelTile3f endDirection,
+            bool isReflected,
+            double laneHalfWidthTiles)
+    {
         // MeshBuilder normalizes each 3D direction and then crosses it with
         // Vector3.up without renormalizing in XY. Using the same projected
         // lateral vector keeps this validation byte-for-byte aligned with
-        // the visible two-tile cross-section on G4/G8 slopes.
+        // the visible lane cross-section on G4/G8 slopes.
         var startLateral = startDirection.Normalized.Xy
             .RightOrthogonalVector;
         var endLateral = endDirection.Normalized.Xy
@@ -1636,20 +1698,20 @@ public sealed class GroundRoadDragController :
         // Cross-section coordinate -1 is center + RightOrthogonalVector,
         // while coordinate +1 is center - RightOrthogonalVector.
         var startRight = new RoadSurfaceVertex(
-            startX + startLateralX,
-            startY + startLateralY,
+            startX + startLateralX * laneHalfWidthTiles,
+            startY + startLateralY * laneHalfWidthTiles,
             startZ);
         var startLeft = new RoadSurfaceVertex(
-            startX - startLateralX,
-            startY - startLateralY,
+            startX - startLateralX * laneHalfWidthTiles,
+            startY - startLateralY * laneHalfWidthTiles,
             startZ);
         var endLeft = new RoadSurfaceVertex(
-            endX - endLateralX,
-            endY - endLateralY,
+            endX - endLateralX * laneHalfWidthTiles,
+            endY - endLateralY * laneHalfWidthTiles,
             endZ);
         var endRight = new RoadSurfaceVertex(
-            endX + endLateralX,
-            endY + endLateralY,
+            endX + endLateralX * laneHalfWidthTiles,
+            endY + endLateralY * laneHalfWidthTiles,
             endZ);
 
         // MeshBuilder's shared top-face diagonal is startRight -> endLeft.
@@ -2299,9 +2361,9 @@ public sealed class GroundRoadDragController :
                 occupiedCoords.Add(occupied.RelCoord);
             }
 
-            // The native track layout is roughly two tiles wide while the
-            // visible two-way highway is four. Recheck that original layout
-            // against the current world, then validate its one-tile fringe.
+            // The native track layout is roughly two tiles wide. Recheck that
+            // original layout against the current world, then validate the
+            // profile-specific fringe out to the full paved half-width.
             // Exact endpoint entities are permitted only inside their small
             // seam area below.
             foreach (var occupied in step.OccupiedTilesRelative)
@@ -2321,9 +2383,18 @@ public sealed class GroundRoadDragController :
                     return false;
                 }
 
-                for (var deltaX = -1; deltaX <= 1; deltaX++)
+                var occupancyFringe = Math.Max(
+                    1,
+                    (int)Math.Ceiling(
+                        HighwayRoadProfile.Get(m_selectedTier)
+                            .RoadHalfWidthTiles - 1.0));
+                for (var deltaX = -occupancyFringe;
+                     deltaX <= occupancyFringe;
+                     deltaX++)
                 {
-                    for (var deltaY = -1; deltaY <= 1; deltaY++)
+                    for (var deltaY = -occupancyFringe;
+                         deltaY <= occupancyFringe;
+                         deltaY++)
                     {
                         var candidate = occupied.RelCoord +
                             new RelTile2i(deltaX, deltaY);
@@ -2415,16 +2486,16 @@ public sealed class GroundRoadDragController :
         {
             var minBucketX = GetRoadSurfaceBucket(
                 Math.Min(planned.StartX, planned.EndX) -
-                RoadSurfaceCollisionRadius);
+                MaximumRoadSurfaceCollisionDistance);
             var maxBucketX = GetRoadSurfaceBucket(
                 Math.Max(planned.StartX, planned.EndX) +
-                RoadSurfaceCollisionRadius);
+                MaximumRoadSurfaceCollisionDistance);
             var minBucketY = GetRoadSurfaceBucket(
                 Math.Min(planned.StartY, planned.EndY) -
-                RoadSurfaceCollisionRadius);
+                MaximumRoadSurfaceCollisionDistance);
             var maxBucketY = GetRoadSurfaceBucket(
                 Math.Max(planned.StartY, planned.EndY) +
-                RoadSurfaceCollisionRadius);
+                MaximumRoadSurfaceCollisionDistance);
             for (var bucketX = minBucketX;
                  bucketX <= maxBucketX;
                  bucketX++)
@@ -2539,6 +2610,10 @@ public sealed class GroundRoadDragController :
         List<RoadSurfaceSegment> result)
     {
         var origin = entity.CenterTile.CornerTile3f;
+        var laneHalfWidth =
+            entity.RoadProto is IHighwayLaneProfileProto profile
+                ? profile.VisualLaneWidthTiles / 2.0
+                : 1.0;
         for (var laneIndex = 0;
              laneIndex < entity.RoadLanesCount;
              laneIndex++)
@@ -2554,6 +2629,7 @@ public sealed class GroundRoadDragController :
                     entity.Id,
                     allowsStartAttachment: false,
                     allowsEndAttachment: false,
+                    laneHalfWidth,
                     result: result);
             }
         }
@@ -2584,6 +2660,7 @@ public sealed class GroundRoadDragController :
                     EntityId.Invalid,
                     allowsStartAttachment,
                     allowsEndAttachment,
+                    piece.Proto.VisualLaneWidthTiles / 2.0,
                     result);
             }
         }
@@ -2595,6 +2672,7 @@ public sealed class GroundRoadDragController :
         EntityId entityId,
         bool allowsStartAttachment,
         bool allowsEndAttachment,
+        double laneHalfWidth,
         List<RoadSurfaceSegment> result)
     {
         var startX = start.X.ToDouble();
@@ -2621,9 +2699,10 @@ public sealed class GroundRoadDragController :
                 startX + deltaX * endT,
                 startY + deltaY * endT,
                 startZ + deltaZ * endT,
-                entityId,
-                allowsStartAttachment,
-                allowsEndAttachment));
+                    entityId,
+                    allowsStartAttachment,
+                    allowsEndAttachment,
+                    laneHalfWidth));
         }
     }
 
@@ -2738,8 +2817,8 @@ public sealed class GroundRoadDragController :
             second.StartY,
             second.EndX,
             second.EndY);
-        if (distanceSquared >=
-            RoadSurfaceCollisionRadius * RoadSurfaceCollisionRadius)
+        var collisionDistance = first.HalfWidth + second.HalfWidth;
+        if (distanceSquared >= collisionDistance * collisionDistance)
         {
             return false;
         }
@@ -3182,7 +3261,7 @@ public sealed class GroundRoadDragController :
         Tile3i cursor)
     {
         return port.Center.Xy.DistanceSqrTo(cursor.Xy) <=
-                   PortSnapMaxDistanceSquared ||
+                   GetPortDirectSnapRangeSquared(port) ||
                port.HasExtendedSnapArea &&
                port.SnapAnchor.Xy.IsNear(
                    cursor.Xy,
@@ -3212,7 +3291,7 @@ public sealed class GroundRoadDragController :
             int priority;
             double primaryDistance;
             double secondaryDistance;
-            if (cursorDistance <= PortSnapMaxDistanceSquared)
+            if (cursorDistance <= GetPortDirectSnapRangeSquared(port))
             {
                 // Pointing directly at a physical port always wins.
                 priority = 0;
@@ -3301,7 +3380,18 @@ public sealed class GroundRoadDragController :
         lateralDistance = Math.Abs(deltaX * outwardY - deltaY * outwardX);
         return longitudinalDistance >= 0.0 &&
                longitudinalDistance <= HighwayEndExtensionSnapLength &&
-               lateralDistance <= HighwayEndExtensionSnapHalfWidth;
+               lateralDistance <= Math.Max(
+                   HighwayEndExtensionSnapHalfWidth,
+                   HighwayRoadProfile.Get(port.Tier).RoadHalfWidthTiles +
+                   1.0);
+    }
+
+    private static int GetPortDirectSnapRangeSquared(HighwayPort port)
+    {
+        var range = Math.Max(
+            Math.Sqrt(PortSnapMaxDistanceSquared),
+            HighwayRoadProfile.Get(port.Tier).RoadHalfWidthTiles + 1.0);
+        return (int)Math.Ceiling(range * range);
     }
 
     private static bool AreSamePort(
@@ -3315,7 +3405,8 @@ public sealed class GroundRoadDragController :
 
         return left.Value.Center == right.Value.Center &&
             left.Value.InboundNode == right.Value.InboundNode &&
-            left.Value.OutboundNode == right.Value.OutboundNode;
+            left.Value.OutboundNode == right.Value.OutboundNode &&
+            left.Value.Tier == right.Value.Tier;
     }
 
     private bool AreAuthorizedAttachmentPortsOpen()
@@ -3458,7 +3549,10 @@ public sealed class GroundRoadDragController :
         {
             var step = plan.Steps[index];
             if (!m_segmentsByTrackId.TryGetValue(
-                    (step.Proto.Id.Value, step.Transform.IsReflected),
+                    (
+                        step.Proto.Id.Value,
+                        step.Transform.IsReflected,
+                        m_selectedTier),
                     out var segment))
             {
                 Log.Warning(
@@ -3528,35 +3622,54 @@ public sealed class GroundRoadDragController :
     {
         var leftNodes = GetGraphNodes(left);
         var rightNodes = GetGraphNodes(right);
-        if (leftNodes.Length < 4 || rightNodes.Length < 4)
+        if (left.Proto.Tier != right.Proto.Tier ||
+            left.Proto.LanesPerDirection != right.Proto.LanesPerDirection ||
+            leftNodes.Length != rightNodes.Length ||
+            leftNodes.Length < 4 ||
+            (leftNodes.Length & 3) != 0)
         {
             return false;
         }
 
-        // Lane 0 follows the physical source-track orientation; lane 1 runs
-        // against it. Some train-plan pieces use a prototype backwards, so
+        // Every even lane follows the physical source-track orientation; its
+        // following odd lane runs against it. Some train-plan pieces use a
+        // prototype backwards, so
         // choose the directed lane endpoints in logical plan order first.
         var leftIsBackward = left.TrackDirection ==
                              TrainTrackTrajectoryDirection.Backward;
         var rightIsBackward = right.TrackDirection ==
                               TrainTrackTrajectoryDirection.Backward;
-        var leftForwardEnd = leftIsBackward
-            ? leftNodes[3]
-            : leftNodes[1];
-        var leftReverseStart = leftIsBackward
-            ? leftNodes[0]
-            : leftNodes[2];
-        var rightForwardStart = rightIsBackward
-            ? rightNodes[2]
-            : rightNodes[0];
-        var rightReverseEnd = rightIsBackward
-            ? rightNodes[1]
-            : rightNodes[3];
+        for (var pairIndex = 0;
+             pairIndex < left.Proto.LanesPerDirection;
+             pairIndex++)
+        {
+            var forwardStartNode = pairIndex * 4;
+            var forwardEndNode = forwardStartNode + 1;
+            var reverseStartNode = forwardStartNode + 2;
+            var reverseEndNode = forwardStartNode + 3;
+            var leftForwardEnd = leftIsBackward
+                ? leftNodes[reverseEndNode]
+                : leftNodes[forwardEndNode];
+            var leftReverseStart = leftIsBackward
+                ? leftNodes[forwardStartNode]
+                : leftNodes[reverseStartNode];
+            var rightForwardStart = rightIsBackward
+                ? rightNodes[reverseStartNode]
+                : rightNodes[forwardStartNode];
+            var rightReverseEnd = rightIsBackward
+                ? rightNodes[forwardEndNode]
+                : rightNodes[reverseEndNode];
 
-        // Validate both directed lanes exactly so coincident but
-        // wrong-facing nodes cannot make vehicles jump or cut a curve.
-        return leftForwardEnd == rightForwardStart &&
-               rightReverseEnd == leftReverseStart;
+            // Validate every directed lane exactly so a passing lane cannot
+            // silently jump, terminate, or connect to the driving lane.
+            if (leftForwardEnd != rightForwardStart ||
+                rightReverseEnd != leftReverseStart)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static ImmutableArray<RoadGraphNodeKey> GetGraphNodes(
@@ -3729,7 +3842,8 @@ public sealed class GroundRoadDragController :
 
         var maximumClearance = 0.0;
         foreach (var local in GetSupportClearanceLocalSamples(
-                     piece.Proto.LanesTrajectories))
+                     piece.Proto.LanesTrajectories,
+                     piece.Proto.VisualLaneWidthTiles / 2.0))
         {
             var world = piece.Proto.Layout
                 .TransformPoint_RelToCenterTile(
@@ -3756,9 +3870,19 @@ public sealed class GroundRoadDragController :
         GetSupportClearanceLocalSamples(
             ImmutableArray<RoadLaneTrajectory> lanes)
     {
-        // Each lane mesh is two tiles wide. Sample its centre and both outer
-        // edges; doing this for both opposing lanes covers the complete
-        // four-tile highway, including transverse slopes.
+        return GetSupportClearanceLocalSamples(
+            lanes,
+            laneHalfWidthTiles: 1.0);
+    }
+
+    private static IEnumerable<RelTile3f>
+        GetSupportClearanceLocalSamples(
+            ImmutableArray<RoadLaneTrajectory> lanes,
+            double laneHalfWidthTiles)
+    {
+        // Sample each lane centre and both profile-specific outer edges. The
+        // combined samples cover 4-, 8-, and 16-tile decks, including their
+        // transverse slopes.
         foreach (var lane in lanes)
         {
             for (var index = 0;
@@ -3768,9 +3892,13 @@ public sealed class GroundRoadDragController :
                 var center = lane.LaneCenterSamples[index];
                 var lateral = lane.LaneDirectionSamples[index]
                     .Normalized.Xy.RightOrthogonalVector;
-                for (var lateralOffset = -1;
-                     lateralOffset <= 1;
-                     lateralOffset++)
+                var halfWidth = laneHalfWidthTiles.ToFix32();
+                foreach (var lateralOffset in new[]
+                         {
+                             -halfWidth,
+                             Fix32.Zero,
+                             halfWidth
+                         })
                 {
                     yield return center + new RelTile3f(
                         lateralOffset * lateral,
@@ -3840,6 +3968,47 @@ public sealed class GroundRoadDragController :
     }
 }
 
+/// <summary>
+/// Gives each road family its own toolbar controller while sharing the costly
+/// train planner, preview pools, and simulation callbacks of the real tool.
+/// </summary>
+public sealed class GroundRoadTierController : IUnityInputController
+{
+    private readonly GroundRoadDragController m_inner;
+
+    public HighwayTier Tier { get; }
+
+    public ControllerConfig Config => m_inner.Config;
+
+    public bool IsActive =>
+        m_inner.IsActive && m_inner.SelectedTier == Tier;
+
+    public GroundRoadTierController(
+        GroundRoadDragController inner,
+        HighwayTier tier)
+    {
+        m_inner = inner;
+        Tier = tier;
+    }
+
+    public void Activate()
+    {
+        m_inner.SelectTier(Tier);
+        m_inner.SetActiveFacade(this);
+        m_inner.Activate();
+    }
+
+    public void Deactivate()
+    {
+        if (m_inner.SelectedTier == Tier)
+        {
+            m_inner.Deactivate();
+        }
+    }
+
+    public bool InputUpdate() => m_inner.InputUpdate();
+}
+
 public sealed class GroundRoadToolbarRegistrator : IHotReloadUi
 {
     private readonly GroundRoadDragController m_controller;
@@ -3863,40 +4032,36 @@ public sealed class GroundRoadToolbarRegistrator : IHotReloadUi
         m_tIntersectionController = tIntersectionController;
         m_crossIntersectionController = crossIntersectionController;
         m_roundaboutController = roundaboutController;
-        var representative = protosDb.All<HighwaySegmentProto>().First();
         var vehicleCategory = protosDb.GetOrThrow<ToolbarCategoryProto>(
             GroundRoadIds.ToolbarCategory);
         var categories = ImmutableArray.Create(
             new ToolbarEntryData(vehicleCategory, order: 0));
-        var name = Loc.Str(
-            "GroundRoads_HighwayTool_Name",
-            "Autobahn bauen",
-            "toolbar name for the train-planned highway tool");
-        var description = Loc.Str(
-            "GroundRoads_HighwayTool_Description",
-            "Baut Autobahnen mit dem Kurven- und Pivotplaner des " +
-            "Schienen-DLC. Unterschiedliche Punkthöhen erzeugen sanfte " +
-            "Geländerampen. E hebt die Fahrbahn an, Q senkt sie ab; " +
-            "gestützte Abschnitte erhalten Betonpfeiler. Linksklick setzt " +
-            "Punkte, Doppelklick baut, " +
-            "Rechtsklick bricht ab. Shift beim Doppelklick setzt am " +
-            "Endpunkt nahtlos fort. Der Verkehrsdirektor verbindet " +
-            "Fahrzeuge automatisch mit der nächsten sinnvollen Autobahn.",
-            "toolbar description for the train-planned highway tool");
-
-        hud.AddItem(
-            new ControllerToolbarMenuItem(
-                context,
+        foreach (var profile in HighwayRoadProfile.All)
+        {
+            var representative = protosDb.All<HighwaySegmentProto>()
+                .First(x => x.Tier == profile.Tier);
+            var tierController = new GroundRoadTierController(
                 controller,
-                name,
-                representative.IconPath,
-                categories,
-                extraLockingProto: null,
-                groupProto: null,
-                popupProto: representative,
-                floaterTitle: name,
-                floaterDesc: description,
-                order: 0));
+                profile.Tier);
+            var name = GroundRoadTexts.Localized(
+                profile.ToolTextId + ".name");
+            var description = GroundRoadTexts.Localized(
+                profile.ToolTextId + ".description");
+
+            hud.AddItem(
+                new ControllerToolbarMenuItem(
+                    context,
+                    tierController,
+                    name,
+                    representative.IconPath,
+                    categories,
+                    extraLockingProto: null,
+                    groupProto: null,
+                    popupProto: representative,
+                    floaterTitle: name,
+                    floaterDesc: description,
+                    order: (int)profile.Tier - 2));
+        }
 
         AddNodeItem(
             hud,
@@ -3904,12 +4069,7 @@ public sealed class GroundRoadToolbarRegistrator : IHotReloadUi
             tIntersectionController,
             tIntersectionController.Prototype,
             categories,
-            "GroundRoads_TIntersectionTool_Name",
-            "T-Kreuzung bauen",
-            "Platziert eine dreiseitige Kreuzung. Rastet nur an freien " +
-            "Enden normaler Autobahnsegmente ein; zwischen zwei Knoten " +
-            "muss ein kurzes Autobahnstück liegen. Drehen ändert die " +
-            "Ausrichtung.",
+            "tool.t-intersection",
             order: 10);
         AddNodeItem(
             hud,
@@ -3917,11 +4077,7 @@ public sealed class GroundRoadToolbarRegistrator : IHotReloadUi
             crossIntersectionController,
             crossIntersectionController.Prototype,
             categories,
-            "GroundRoads_CrossIntersectionTool_Name",
-            "+-Kreuzung bauen",
-            "Platziert eine vierseitige ungeregelte Kreuzung mit Geradeaus-, " +
-            "Links- und Rechtsabbiegern. Zwischen zwei Knoten muss ein " +
-            "kurzes Autobahnstück liegen.",
+            "tool.cross-intersection",
             order: 20);
         AddNodeItem(
             hud,
@@ -3929,11 +4085,7 @@ public sealed class GroundRoadToolbarRegistrator : IHotReloadUi
             roundaboutController,
             roundaboutController.Prototype,
             categories,
-            "GroundRoads_RoundaboutTool_Name",
-            "Kreisverkehr bauen",
-            "Platziert einen vierarmigen Kreisverkehr für Rechtsverkehr. " +
-            "Alle Bewegungen folgen derselben Kreisrichtung. Zwischen zwei " +
-            "Knoten muss ein kurzes Autobahnstück liegen.",
+            "tool.roundabout",
             order: 30);
 
     }
@@ -3944,16 +4096,11 @@ public sealed class GroundRoadToolbarRegistrator : IHotReloadUi
         TController controller,
         HighwayJunctionProto proto,
         ImmutableArray<ToolbarEntryData> categories,
-        string localizationId,
-        string displayName,
-        string description,
+        string textId,
         int order)
         where TController : HighwayNodePlacementControllerBase
     {
-        var name = Loc.Str(
-            localizationId,
-            displayName,
-            "toolbar name for a GroundRoads highway node tool");
+        var name = GroundRoadTexts.Localized(textId + ".name");
         hud.AddItem(
             new ControllerToolbarMenuItem(
                 context,
@@ -3965,10 +4112,8 @@ public sealed class GroundRoadToolbarRegistrator : IHotReloadUi
                 groupProto: null,
                 popupProto: proto,
                 floaterTitle: name,
-                floaterDesc: Loc.Str(
-                    localizationId + "_Description",
-                    description,
-                    "toolbar description for a GroundRoads highway node tool"),
+                floaterDesc:
+                    GroundRoadTexts.Localized(textId + ".description"),
                 order: order));
     }
 

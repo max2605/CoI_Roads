@@ -8,6 +8,7 @@ using Mafi.Core;
 using Mafi.Core.Entities;
 using Mafi.Core.Entities.Dynamic;
 using Mafi.Core.PathFinding;
+using Mafi.Core.Prototypes;
 using Mafi.Core.Roads;
 using Mafi.Core.Terrain;
 using Mafi.Core.Trains;
@@ -194,6 +195,9 @@ public sealed class HighwayTrafficDirector : IDisposable
     private readonly IRoadsManager m_roadsManager;
     private readonly ClearancePathabilityProvider m_pathabilityProvider;
     private readonly TerrainManager m_terrainManager;
+    private readonly Dictionary<string, RelTile1f>
+        m_originalRoadVehicleSpeeds = new();
+    private readonly RelTile1f m_fastestRoadVehicleSpeed;
     private Dictionary<RoadGraphNodeKey, List<HighwayEdge>> m_cachedGraph;
     private HashSet<RoadGraphNodeKey> m_entryAccessNodes = new();
     private HashSet<RoadGraphNodeKey> m_exitAccessNodes = new();
@@ -203,12 +207,16 @@ public sealed class HighwayTrafficDirector : IDisposable
         IEntitiesManager entitiesManager,
         IRoadsManager roadsManager,
         ClearancePathabilityProvider pathabilityProvider,
-        TerrainManager terrainManager)
+        TerrainManager terrainManager,
+        ProtosDb protosDb)
     {
         m_entitiesManager = entitiesManager;
         m_roadsManager = roadsManager;
         m_pathabilityProvider = pathabilityProvider;
         m_terrainManager = terrainManager;
+        m_fastestRoadVehicleSpeed = CaptureRoadVehicleSpeeds(
+            protosDb,
+            m_originalRoadVehicleSpeeds);
         m_roadsManager.RoadBecamePathable.AddNonSaveable(
             this,
             OnRoadChanged);
@@ -250,6 +258,11 @@ public sealed class HighwayTrafficDirector : IDisposable
         {
             return false;
         }
+
+        var lanePreference = HighwayLanePolicy.SelectPreference(
+            vehicle,
+            GetOriginalRoadVehicleSpeed(vehicle),
+            m_fastestRoadVehicleSpeed);
 
         // A lane graph node is a precise road coordinate, not necessarily a
         // terrain-pathable tile for a truck-sized clearance. Resolve a small
@@ -327,7 +340,7 @@ public sealed class HighwayTrafficDirector : IDisposable
                     MinimumDistance(starts, entryTile) +
                     entryConnectorDistance;
                 var firstCost = terrainEntryCost +
-                    ComputeHighwayTravelCost(edge.Distance);
+                    ComputeHighwayTravelCost(edge, lanePreference);
                 if (distances.TryGetValue(edge.End, out var oldCost) &&
                     !(firstCost < oldCost))
                 {
@@ -372,7 +385,7 @@ public sealed class HighwayTrafficDirector : IDisposable
                 }
 
                 var nextCost = currentCost +
-                    ComputeHighwayTravelCost(edge.Distance);
+                    ComputeHighwayTravelCost(edge, lanePreference);
                 if (distances.TryGetValue(edge.End, out var knownCost) &&
                     !(nextCost < knownCost))
                 {
@@ -592,6 +605,26 @@ public sealed class HighwayTrafficDirector : IDisposable
                     exitAccessNodes);
             }
 
+            // A T4 port is one physical lane bundle so the build tool has one
+            // unambiguous snap target per road end. Routing still needs every
+            // parallel lane endpoint as a valid terrain entry/exit; otherwise
+            // the outer driving lane could never be selected initially.
+            if (entity.RoadProto is IHighwayLaneProfileProto laneProfile &&
+                laneProfile.LanesPerDirection > 1)
+            {
+                for (var laneIndex = 0;
+                     laneIndex < entity.RoadLanesCount;
+                     laneIndex++)
+                {
+                    entity.GetLaneNodes(
+                        laneIndex,
+                        out var laneStart,
+                        out var laneEnd);
+                    entryAccessNodes.Add(laneStart);
+                    exitAccessNodes.Add(laneEnd);
+                }
+            }
+
             for (var laneIndex = 0;
                  laneIndex < entity.RoadLanesCount;
                 laneIndex++)
@@ -731,6 +764,56 @@ public sealed class HighwayTrafficDirector : IDisposable
     private static Fix32 ComputeHighwayTravelCost(Fix32 roadDistance)
     {
         return roadDistance * 100 / HighwaySpeedPercent;
+    }
+
+    private RelTile1f GetOriginalRoadVehicleSpeed(
+        IPathFindingVehicle vehicle)
+    {
+        if (vehicle?.Prototype != null &&
+            m_originalRoadVehicleSpeeds.TryGetValue(
+                vehicle.Prototype.Id.Value,
+                out var speed))
+        {
+            return speed;
+        }
+
+        return RelTile1f.Zero;
+    }
+
+    private static RelTile1f CaptureRoadVehicleSpeeds(
+        ProtosDb protosDb,
+        Dictionary<string, RelTile1f> speedsByProto)
+    {
+        var fastest = RelTile1f.Zero;
+        foreach (var proto in protosDb.All<DrivingEntityProto>())
+        {
+            if (proto.PathFindingParams.RoadLaneTypeMask !=
+                RoadLaneType.MaskAllowNone)
+            {
+                var speed = proto.DrivingData.MaxForwardsSpeed;
+                speedsByProto[proto.Id.Value] = speed;
+                fastest = fastest.Max(speed);
+            }
+        }
+
+        return fastest;
+    }
+
+    private static Fix32 ComputeHighwayTravelCost(
+        HighwayEdge edge,
+        HighwayLanePreference preference)
+    {
+        var roadProto = edge.Segment.Entity.RoadProto;
+        var normalizedDistance =
+            HighwayLanePolicy.NormalizeParallelLaneDistance(
+                roadProto,
+                edge.Distance);
+        var travelCost = ComputeHighwayTravelCost(normalizedDistance);
+        return HighwayLanePolicy.ApplyPreferenceCost(
+            roadProto,
+            edge.Segment.LaneIndex,
+            preference,
+            travelCost);
     }
 
     private static Tile2i ProjectHighwayNodeToTerrain(

@@ -6,6 +6,7 @@ using Mafi.Core.Game;
 using Mafi.Core.Mods;
 using Mafi.Core.PathFinding;
 using Mafi.Core.Prototypes;
+using MultiLangLib;
 
 namespace GroundRoads;
 
@@ -27,6 +28,7 @@ public sealed class GroundRoadsMod : IMod
     {
         Manifest = manifest;
         JsonConfig = new ModJsonConfig(this);
+        Lang.RegisterMod(manifest.Id, manifest.RootDirectoryPath);
         Log.Info("GroundRoads: constructed");
     }
 
@@ -77,7 +79,8 @@ public sealed class GroundRoadsMod : IMod
         m_toolbarRegistrator =
             resolver.Resolve<GroundRoadToolbarRegistrator>();
         Log.Info(
-            "GroundRoads: initialized. Resource-supplied asphalt highways, " +
+            "GroundRoads: initialized. 4/8/16-tile resource-supplied " +
+            "asphalt highways, static T4 passing-lane routing, " +
             "automatic traffic-director routing, Q/E elevation ramps with " +
             "concrete supports, " +
             "T/+ intersections, roundabouts, lane-bound driving, and road " +

@@ -30,19 +30,36 @@ internal static class HighwayConstructionCosts
 
     public static HighwayMaterialAmounts ForLength(double lengthTiles)
     {
+        return ForScaledLength(lengthTiles, widthScale: 1.0);
+    }
+
+    public static HighwayMaterialAmounts ForScaledLength(
+        double lengthTiles,
+        double widthScale)
+    {
         if (double.IsNaN(lengthTiles) ||
             double.IsInfinity(lengthTiles) ||
             lengthTiles <= 0.0)
         {
             throw new ArgumentOutOfRangeException(nameof(lengthTiles));
         }
+        if (double.IsNaN(widthScale) ||
+            double.IsInfinity(widthScale) ||
+            widthScale <= 0.0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(widthScale));
+        }
 
         var pavedLengthTiles = Math.Max(
             1,
             (int)Math.Ceiling(lengthTiles - 1e-8));
         return new HighwayMaterialAmounts(
-            pavedLengthTiles * GravelPerPavedLengthTile,
-            pavedLengthTiles * AsphaltPerPavedLengthTile);
+            Math.Max(1, (int)Math.Ceiling(
+                pavedLengthTiles * GravelPerPavedLengthTile * widthScale -
+                1e-8)),
+            Math.Max(1, (int)Math.Ceiling(
+                pavedLengthTiles * AsphaltPerPavedLengthTile * widthScale -
+                1e-8)));
     }
 
     public static HighwayMaterialAmounts ForNode(HighwayNodeKind kind)
@@ -63,6 +80,16 @@ internal static class HighwayConstructionCosts
         double lengthTiles)
     {
         return Create(registrator, ForLength(lengthTiles));
+    }
+
+    public static EntityCosts CreateForScaledLength(
+        ProtoRegistrator registrator,
+        double lengthTiles,
+        double widthScale)
+    {
+        return Create(
+            registrator,
+            ForScaledLength(lengthTiles, widthScale));
     }
 
     public static EntityCosts CreateForNode(
