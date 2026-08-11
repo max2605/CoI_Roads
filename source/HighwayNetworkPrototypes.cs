@@ -55,6 +55,7 @@ public readonly struct HighwayPort
     public readonly Tile3i SnapAnchor;
     public readonly bool HasExtendedSnapArea;
     public readonly int AttachmentCollisionSeamRange;
+    public readonly HighwayTier Tier;
 
     public HighwayPort(
         Tile3i center,
@@ -62,7 +63,8 @@ public readonly struct HighwayPort
         RoadGraphNodeKey outboundNode,
         Tile3i? extendedSnapAnchor = null,
         int attachmentCollisionSeamRange =
-            DefaultAttachmentCollisionSeamRange)
+            DefaultAttachmentCollisionSeamRange,
+        HighwayTier tier = HighwayTier.Standard)
     {
         Center = center;
         InboundNode = inboundNode;
@@ -70,13 +72,15 @@ public readonly struct HighwayPort
         SnapAnchor = extendedSnapAnchor ?? center;
         HasExtendedSnapArea = extendedSnapAnchor.HasValue;
         AttachmentCollisionSeamRange = attachmentCollisionSeamRange;
+        Tier = tier;
     }
 
     public bool IsExactMateOf(HighwayPort other)
     {
         return InboundNode == other.OutboundNode &&
                OutboundNode == other.InboundNode &&
-               Center == other.Center;
+               Center == other.Center &&
+               Tier == other.Tier;
     }
 }
 
@@ -84,17 +88,20 @@ internal readonly struct HighwayPortKey : IEquatable<HighwayPortKey>
 {
     private readonly RoadGraphNodeKey m_first;
     private readonly RoadGraphNodeKey m_second;
+    private readonly HighwayTier m_tier;
 
     public HighwayPortKey(HighwayPort port)
     {
         m_first = port.InboundNode;
         m_second = port.OutboundNode;
+        m_tier = port.Tier;
     }
 
     public bool Equals(HighwayPortKey other)
     {
-        return (m_first == other.m_first && m_second == other.m_second) ||
-               (m_first == other.m_second && m_second == other.m_first);
+        return m_tier == other.m_tier &&
+            ((m_first == other.m_first && m_second == other.m_second) ||
+             (m_first == other.m_second && m_second == other.m_first));
     }
 
     public override bool Equals(object obj)
@@ -104,7 +111,8 @@ internal readonly struct HighwayPortKey : IEquatable<HighwayPortKey>
 
     public override int GetHashCode()
     {
-        return m_first.GetHashCode() ^ m_second.GetHashCode();
+        return m_first.GetHashCode() ^ m_second.GetHashCode() ^
+               (int)m_tier;
     }
 }
 
@@ -283,27 +291,24 @@ internal static class HighwayNetworkData
         RegisterNodeVariants(
             registrator,
             GroundRoadIds.HighwayTIntersection,
-            "Autobahn-T-Kreuzung",
-            "Ungeregelte dreiseitige Autobahnkreuzung mit allen sechs " +
-            "gerichteten Abbiegemöglichkeiten.",
+            GroundRoadTexts.Get("prototype.t-intersection.name"),
+            GroundRoadTexts.Get("prototype.t-intersection.description"),
             HighwayNodeKind.TIntersection,
             CreateTIntersectionVariant,
             maxVehiclesSpeedPerTick);
         RegisterNodeVariants(
             registrator,
             GroundRoadIds.HighwayCrossIntersection,
-            "Autobahn-Kreuzung",
-            "Ungeregelte vierseitige Autobahnkreuzung mit Geradeaus-, " +
-            "Links- und Rechtsabbiegern.",
+            GroundRoadTexts.Get("prototype.cross-intersection.name"),
+            GroundRoadTexts.Get("prototype.cross-intersection.description"),
             HighwayNodeKind.CrossIntersection,
             CreateCrossIntersectionVariant,
             maxVehiclesSpeedPerTick);
         RegisterNodeVariants(
             registrator,
             GroundRoadIds.HighwayRoundabout,
-            "Autobahn-Kreisverkehr",
-            "Vierarmiger Kreisverkehr für Rechtsverkehr. Jede Zufahrt kann " +
-            "jede der drei anderen Ausfahrten erreichen.",
+            GroundRoadTexts.Get("prototype.roundabout.name"),
+            GroundRoadTexts.Get("prototype.roundabout.description"),
             HighwayNodeKind.Roundabout,
             CreateRoundaboutVariant,
             maxVehiclesSpeedPerTick);

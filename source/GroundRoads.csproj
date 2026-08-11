@@ -8,9 +8,9 @@
     <RootNamespace>GroundRoads</RootNamespace>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <Version>0.4.1</Version>
-    <FileVersion>0.4.1.0</FileVersion>
-    <AssemblyVersion>0.4.1.0</AssemblyVersion>
+    <Version>0.5.0</Version>
+    <FileVersion>0.5.0.0</FileVersion>
+    <AssemblyVersion>0.5.0.0</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -30,6 +30,10 @@
       <HintPath>$(COI_ROOT)\Captain of Industry_Data\Managed\Mafi.Unity.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="MultiLangLib">
+      <HintPath>$(APPDATA)\Captain of Industry\Mods\MultiLangLib\MultiLangLib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>$(COI_ROOT)\Captain of Industry_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
       <Private>false</Private>
@@ -47,5 +51,26 @@
       <Private>false</Private>
     </Reference>
   </ItemGroup>
+
+  <ItemGroup>
+    <None
+      Include="..\lang\**\*.json"
+      Link="lang\%(RecursiveDir)%(Filename)%(Extension)"
+      CopyToOutputDirectory="PreserveNewest" />
+    <None
+      Include="..\lang\README.md"
+      Link="lang\README.md"
+      CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target
+    Name="DeployReleaseDllToModRoot"
+    AfterTargets="Build"
+    Condition="'$(Configuration)' == 'Release' and
+               '$(DesignTimeBuild)' != 'true'">
+    <Copy
+      SourceFiles="$(TargetPath)"
+      DestinationFiles="$(MSBuildProjectDirectory)\..\GroundRoads.dll" />
+  </Target>
 
 </Project>

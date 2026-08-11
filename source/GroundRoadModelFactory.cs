@@ -118,13 +118,14 @@ public sealed class GroundRoadModelFactory :
                  laneIndex < proto.LanesTrajectories.Length;
                  laneIndex++)
             {
-                // The logical MaskAllowAll lane is four tiles wide so every
-                // truck class may use it. Visually a highway lane is only two
-                // tiles wide; otherwise two overlapping four-tile strips look
-                // like a three-lane road.
-                var visualWidth = proto is IHighwayNetworkProto
-                    ? 2.0.Tiles().ToUnityUnits()
-                    : proto.LanesSpecs[laneIndex].GetWidth().ToUnityUnits();
+                // Standard lanes retain their historical two-tile surface.
+                // Heavy profiles deliberately render native four-tile lanes
+                // so two T3/T4 vehicles never overlap visually or physically.
+                var visualWidth = proto is IHighwayLaneProfileProto profile
+                    ? profile.VisualLaneWidthTiles.Tiles().ToUnityUnits()
+                    : proto is IHighwayNetworkProto
+                        ? 2.0.Tiles().ToUnityUnits()
+                        : proto.LanesSpecs[laneIndex].GetWidth().ToUnityUnits();
                 AppendVisibleLane(
                     builder,
                     proto.LanesTrajectories[laneIndex],
@@ -137,6 +138,23 @@ public sealed class GroundRoadModelFactory :
             m_assetsDb.GetSharedMaterial(VertexColorMaterial));
 
         LayoutEntityModelFactory.AddLayoutBoxCollider(gameObject, proto);
+        if (proto is HighwaySegmentProto highway &&
+            highway.Tier != HighwayTier.Standard)
+        {
+            // The compatibility layout deliberately occupies only one tile,
+            // which is too narrow for selecting or bulldozing the outer T4
+            // lanes. A model-only collider follows the actual curved asphalt
+            // without changing placement bounds, pathability, or save data.
+            var mesh = gameObject.GetComponent<MeshFilter>()?.sharedMesh;
+            if (mesh != null)
+            {
+                var selectionCollider =
+                    gameObject.GetComponent<MeshCollider>() ??
+                    gameObject.AddComponent<MeshCollider>();
+                selectionCollider.sharedMesh = mesh;
+            }
+        }
+
         return gameObject;
     }
 
@@ -220,7 +238,8 @@ public sealed class GroundRoadModelFactory :
         var maximumDepth =
             TrainTrackPillarProto.MAX_PILLAR_HEIGHT.Value * tile;
         var beamHalfThickness = 0.10f * tile;
-        var beamHalfWidth = 2.10f * tile;
+        var beamHalfWidth =
+            (float)(proto.RoadHalfWidthTiles + 0.10) * tile;
         var columnHalfWidth = 0.28f * tile;
         var baseHalfWidth = 0.46f * tile;
         var baseHalfHeight = 0.16f * tile;

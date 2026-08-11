@@ -91,6 +91,7 @@ internal static class Program
             CheckHighwayReroutePolicy(assembly);
             CheckJunctionSpacingPolicy(assembly);
             CheckElevationRampSupport(assembly);
+            CheckHighwayRoadProfiles(assembly);
             CheckHighwaySupportModel(assembly);
             CheckHighwayConstructionEconomy(assembly, kindType);
 
@@ -104,7 +105,7 @@ internal static class Program
                 "heading selection, junction-body road snapping, extended " +
                 "roundabout attachment seams, bounded terrain-reroute " +
                 "work, 16 " +
-                "flat-end retries, four-tile terrain " +
+                "flat-end retries, 4/8/16-tile road profiles, four-tile terrain " +
                 "and entity-corridor clearance, geometric existing-highway " +
                 "collision checks, support-capable G0/G4/G8 surfaces, " +
                 "non-buried plateau crests, native Q/E elevation limits, " +
@@ -121,6 +122,127 @@ internal static class Program
             Console.Error.WriteLine(error);
             return 1;
         }
+    }
+
+    private static void CheckHighwayRoadProfiles(Assembly assembly)
+    {
+        var profiles = HighwayRoadProfile.All.ToArray();
+        Require(profiles.Length == 3,
+            "Exactly three save-stable highway profiles must be registered.");
+        var standard = HighwayRoadProfile.Standard;
+        var heavy = HighwayRoadProfile.HeavyT3;
+        var massive = HighwayRoadProfile.MassiveT4;
+        Require(standard.Tier == HighwayTier.Standard &&
+                standard.LanesPerDirection == 1 &&
+                standard.RoadHalfWidthTiles == 2.0 &&
+                standard.VisualLaneWidthTiles == 2.0 &&
+                standard.IdToken == string.Empty,
+            "Standard T1/T2 geometry or its historical ID token changed.");
+        Require(heavy.Tier == HighwayTier.HeavyT3 &&
+                heavy.LanesPerDirection == 1 &&
+                heavy.RoadHalfWidthTiles == 4.0 &&
+                heavy.VisualLaneWidthTiles == 4.0 &&
+                heavy.LaneOffsetsTiles[0] == 2.0.ToFix32(),
+            "T3 must provide one physical four-tile lane per direction.");
+        Require(massive.Tier == HighwayTier.MassiveT4 &&
+                massive.LanesPerDirection == 2 &&
+                massive.RoadHalfWidthTiles == 8.0 &&
+                massive.VisualLaneWidthTiles == 4.0 &&
+                massive.LaneOffsetsTiles[0] == 2.0.ToFix32() &&
+                massive.LaneOffsetsTiles[1] == 6.0.ToFix32(),
+            "T4 must provide two non-overlapping four-tile lanes per direction.");
+        Require(massive.IsPassingLane(0) &&
+                massive.IsPassingLane(1) &&
+                !massive.IsPassingLane(2) &&
+                !massive.IsPassingLane(3),
+            "T4 inner and outer lane roles are not stable.");
+
+        var profileProto = typeof(HighwaySegmentProto);
+        Require(typeof(IHighwayLaneProfileProto).IsAssignableFrom(profileProto),
+            "Highway segments must expose their lane profile to routing.");
+
+        var dataType = assembly.GetType(
+            "GroundRoads.GroundRoadsData",
+            throwOnError: true);
+        var createProfiles = GetPrivateStaticMethod(
+            dataType,
+            "CreateHighwayLaneTrajectories",
+            typeof(TrainTrackSegmentsRel),
+            typeof(HighwayRoadProfile),
+            typeof(bool));
+        var direction = CreateTrackDirection(
+            0.0,
+            TrainTrackGradeFactor.G0);
+        var exactDirection = new RelTile3f(1, 0, 0);
+        var sourcePositions = ImmutableArray.Create(
+            new RelTile3f(0, 0, 0),
+            new RelTile3f(8, 0, 0));
+        var source = new TrainTrackSegmentsRel(
+            sourcePositions,
+            ImmutableArray.Create(exactDirection, exactDirection),
+            ImmutableArray.Create(RelTile1f.Zero, 8.0.Tiles()),
+            direction,
+            direction);
+
+        foreach (var profile in profiles)
+        {
+            var generated =
+                (ImmutableArray<RoadLaneTrajectory>)createProfiles.Invoke(
+                    null,
+                    new object[] { source, profile, false });
+            var reflected =
+                (ImmutableArray<RoadLaneTrajectory>)createProfiles.Invoke(
+                    null,
+                    new object[] { source, profile, true });
+            Require(generated.Length == profile.LanesPerDirection * 2 &&
+                    reflected.Length == generated.Length,
+                $"{profile.Tier} generated the wrong lane count.");
+            for (var pairIndex = 0;
+                 pairIndex < profile.LanesPerDirection;
+                 pairIndex++)
+            {
+                var expectedOffset = profile.LaneOffsetsTiles[pairIndex];
+                var forward = generated[pairIndex * 2];
+                var reverse = generated[pairIndex * 2 + 1];
+                Require(forward.LaneCenterSamples.First.Xy.DistanceTo(
+                            sourcePositions.First.Xy) == expectedOffset &&
+                        reverse.LaneCenterSamples.First.Xy.DistanceTo(
+                            sourcePositions.Last.Xy) == expectedOffset,
+                    $"{profile.Tier} lane pair {pairIndex} has an invalid " +
+                    "centre offset.");
+                Require(reflected[pairIndex * 2].LaneDirectionSamples.First ==
+                            forward.LaneDirectionSamples.First &&
+                        reflected[pairIndex * 2 + 1]
+                            .LaneDirectionSamples.First ==
+                            reverse.LaneDirectionSamples.First,
+                    $"{profile.Tier} reflected lane pair {pairIndex} changed " +
+                    "its directed travel roles.");
+            }
+        }
+
+        var costsType = assembly.GetType(
+            "GroundRoads.HighwayConstructionCosts",
+            throwOnError: true);
+        var scaledCost = costsType.GetMethod(
+            "ForScaledLength",
+            BindingFlags.Static | BindingFlags.Public,
+            binder: null,
+            new[] { typeof(double), typeof(double) },
+            modifiers: null);
+        Require(scaledCost != null,
+            "Width-scaled highway construction costs are missing.");
+        var heavyAmounts = scaledCost.Invoke(
+            null,
+            new object[] { 8.0, heavy.ConstructionWidthScale });
+        var massiveAmounts = scaledCost.Invoke(
+            null,
+            new object[] { 8.0, massive.ConstructionWidthScale });
+        var amountType = heavyAmounts.GetType();
+        Require((int)amountType.GetField("Gravel").GetValue(heavyAmounts) == 32 &&
+                (int)amountType.GetField("Asphalt").GetValue(heavyAmounts) == 16 &&
+                (int)amountType.GetField("Gravel").GetValue(massiveAmounts) == 64 &&
+                (int)amountType.GetField("Asphalt").GetValue(massiveAmounts) == 32,
+            "T3/T4 construction materials do not scale with paved width.");
     }
 
     private static void CheckGeometry(

@@ -5,7 +5,6 @@ using Mafi.Core.Entities;
 using Mafi.Core.Entities.Static.Layout;
 using Mafi.Core.Entities.Validators;
 using Mafi.Core.Roads;
-using Mafi.Localization;
 
 namespace GroundRoads;
 
@@ -21,13 +20,9 @@ public sealed class HighwayJunctionPlacementValidator :
     internal const int MinimumCenterDistanceSquared =
         MinimumCenterDistanceTiles * MinimumCenterDistanceTiles;
 
-    internal static readonly LocStrFormatted SpacingErrorForPlayer = Loc.Str(
-        "GroundRoads_JunctionSpacingError",
-        "Kreuzungen und Kreisverkehre dürfen sich nicht überlappen oder " +
-        "direkt nebeneinander liegen. Baue dazwischen ein kurzes " +
-        "Autobahnstück.",
-        "placement error when two GroundRoads highway junctions are too " +
-        "close").AsFormatted;
+    internal static readonly Mafi.Localization.LocStrFormatted
+        SpacingErrorForPlayer =
+            GroundRoadTexts.Localized("error.junction-spacing");
 
     private readonly IEntitiesManager m_entitiesManager;
 

@@ -289,7 +289,8 @@ public class GroundRoadEntranceProto : RoadEntranceEntityProto,
 /// </summary>
 public sealed class HighwaySegmentProto : GroundRoadProto,
     IHighwayMainlineProto,
-    IHighwayPortProto
+    IHighwayPortProto,
+    IHighwayLaneProfileProto
 {
     public TrainTrackProto SourceTrackProto { get; }
 
@@ -299,6 +300,16 @@ public sealed class HighwaySegmentProto : GroundRoadProto,
     /// therefore use lane geometry whose handedness was swapped beforehand.
     /// </summary>
     public bool CorrectsReflectedHandedness { get; }
+
+    public HighwayRoadProfile RoadProfile { get; }
+
+    public HighwayTier Tier => RoadProfile.Tier;
+
+    public int LanesPerDirection => RoadProfile.LanesPerDirection;
+
+    public double VisualLaneWidthTiles => RoadProfile.VisualLaneWidthTiles;
+
+    public double RoadHalfWidthTiles => RoadProfile.RoadHalfWidthTiles;
 
     public bool ParticipatesInHighwayNetwork => true;
 
@@ -315,7 +326,8 @@ public sealed class HighwaySegmentProto : GroundRoadProto,
         RelTile3f connectionPointAtEnd,
         RoadEntityProtoBase.Gfx graphics,
         TrainTrackProto sourceTrackProto,
-        bool correctsReflectedHandedness)
+        bool correctsReflectedHandedness,
+        HighwayRoadProfile roadProfile)
         : base(
             id,
             strings,
@@ -331,7 +343,11 @@ public sealed class HighwaySegmentProto : GroundRoadProto,
     {
         SourceTrackProto = sourceTrackProto;
         CorrectsReflectedHandedness = correctsReflectedHandedness;
+        RoadProfile = roadProfile;
     }
+
+    public bool IsPassingLane(int laneIndex) =>
+        RoadProfile.IsPassingLane(laneIndex);
 
     public TileTransform MapTrackTransform(TileTransform trackTransform)
     {
@@ -370,37 +386,44 @@ public sealed class HighwaySegmentProto : GroundRoadProto,
             trackTransform.IsReflected);
     }
 
+    // One physical port per end. T4's parallel lanes are a lane bundle behind
+    // that port; exposing them as separate clickable ports would make the
+    // planner snap ambiguously to the same road centre.
     public int HighwayPortCount => 2;
 
     public HighwayPort GetHighwayPort(int index, TileTransform transform)
     {
-        if (index == 0)
+        if (index < 0 || index >= HighwayPortCount)
         {
-            var center = Layout.TransformPoint_RelToCenterTile(
-                    LanesData[0].StartPosition.Average(
-                        LanesData[1].EndPosition),
-                    transform)
-                .Tile3iRounded;
-            return new HighwayPort(
-                center,
-                GetTransformedStartGraphNode(0, transform),
-                GetTransformedEndGraphNode(1, transform));
+            throw new ArgumentOutOfRangeException(nameof(index));
         }
 
-        if (index == 1)
-        {
-            var center = Layout.TransformPoint_RelToCenterTile(
-                    LanesData[0].EndPosition.Average(
-                        LanesData[1].StartPosition),
-                    transform)
-                .Tile3iRounded;
-            return new HighwayPort(
+        var isAtEnd = index == 1;
+        const int forwardLaneIndex = 0;
+        const int reverseLaneIndex = 1;
+        var center = Layout.TransformPoint_RelToCenterTile(
+                isAtEnd
+                    ? LanesData[forwardLaneIndex].EndPosition.Average(
+                        LanesData[reverseLaneIndex].StartPosition)
+                    : LanesData[forwardLaneIndex].StartPosition.Average(
+                        LanesData[reverseLaneIndex].EndPosition),
+                transform)
+            .Tile3iRounded;
+        return isAtEnd
+            ? new HighwayPort(
                 center,
-                GetTransformedStartGraphNode(1, transform),
-                GetTransformedEndGraphNode(0, transform));
-        }
-
-        throw new ArgumentOutOfRangeException(nameof(index));
+                GetTransformedStartGraphNode(reverseLaneIndex, transform),
+                GetTransformedEndGraphNode(forwardLaneIndex, transform),
+                attachmentCollisionSeamRange:
+                    (int)Math.Ceiling(RoadHalfWidthTiles),
+                tier: Tier)
+            : new HighwayPort(
+                center,
+                GetTransformedStartGraphNode(forwardLaneIndex, transform),
+                GetTransformedEndGraphNode(reverseLaneIndex, transform),
+                attachmentCollisionSeamRange:
+                    (int)Math.Ceiling(RoadHalfWidthTiles),
+                tier: Tier);
     }
 }
 
@@ -601,9 +624,8 @@ internal static class GroundRoadsData
                 GroundRoadIds.ToolbarCategory,
                 Proto.CreateStr(
                     GroundRoadIds.ToolbarCategory,
-                    "Autobahnen",
-                    "Schienenartig geplante Autobahnen mit Geländerampen " +
-                    "und automatischer Zufahrt durch den Verkehrsdirektor."),
+                    GroundRoadTexts.Get("category.highways.name"),
+                    GroundRoadTexts.Get("category.highways.description")),
                 order: 100f,
                 iconPath: RoadIcon,
                 parentCategory: vehiclesCategory));
@@ -620,9 +642,8 @@ internal static class GroundRoadsData
         RegisterEntrance(
             registrator,
             GroundRoadIds.OneWayEntrance,
-            "Ground road: one-way entrance",
-            "Terrain-to-road connector for a directed ground road. " +
-            "The build arrow shows the driving direction.",
+            GroundRoadTexts.Get("legacy.one-way-entrance.name"),
+            GroundRoadTexts.Get("legacy.one-way-entrance.description"),
             ImmutableArray.Create(
                 Lane(
                     Curve(
@@ -638,9 +659,8 @@ internal static class GroundRoadsData
         RegisterEntrance(
             registrator,
             GroundRoadIds.OneWayExit,
-            "Ground road: one-way exit",
-            "Road-to-terrain connector for a directed ground road. " +
-            "The build arrow shows the driving direction.",
+            GroundRoadTexts.Get("legacy.one-way-exit.name"),
+            GroundRoadTexts.Get("legacy.one-way-exit.description"),
             ImmutableArray.Create(
                 Lane(
                     Curve(
@@ -656,9 +676,8 @@ internal static class GroundRoadsData
         RegisterRoad(
             registrator,
             GroundRoadIds.OneWayStraight,
-            "Ground road: one-way straight",
-            "Directed twelve-tile road segment. Connect an entrance at the " +
-            "start and an exit at the end.",
+            GroundRoadTexts.Get("legacy.one-way-straight.name"),
+            GroundRoadTexts.Get("legacy.one-way-straight.description"),
             ImmutableArray.Create(
                 Lane(
                     Curve(
@@ -673,9 +692,8 @@ internal static class GroundRoadsData
         RegisterRoad(
             registrator,
             GroundRoadIds.OneWayCurve,
-            "Ground road: one-way 90-degree curve",
-            "Directed 90-degree road curve. Rotate or reflect while placing " +
-            "to obtain the required turn.",
+            GroundRoadTexts.Get("legacy.one-way-curve.name"),
+            GroundRoadTexts.Get("legacy.one-way-curve.description"),
             ImmutableArray.Create(
                 Lane(
                     Curve(
@@ -691,9 +709,8 @@ internal static class GroundRoadsData
         RegisterEntrance(
             registrator,
             GroundRoadIds.TwoWayEntrance,
-            "Ground road: two-way entrance",
-            "Combined terrain entrance and exit for a two-way ground road. " +
-            "Both lanes support every truck size.",
+            GroundRoadTexts.Get("legacy.two-way-entrance.name"),
+            GroundRoadTexts.Get("legacy.two-way-entrance.description"),
             ImmutableArray.Create(
                 Lane(
                     Curve(
@@ -717,10 +734,8 @@ internal static class GroundRoadsData
         RegisterRoad(
             registrator,
             GroundRoadIds.TwoWayStraight,
-            "Ground road: two-way straight",
-            "Twelve-tile two-way road segment with one lane in each direction. " +
-            "Hold the left mouse button and drag for repeated straight pieces, " +
-            "or use the two-way drag-line tool for automatic entrances.",
+            GroundRoadTexts.Get("legacy.two-way-straight.name"),
+            GroundRoadTexts.Get("legacy.two-way-straight.description"),
             ImmutableArray.Create(
                 Lane(
                     Curve(
@@ -743,9 +758,8 @@ internal static class GroundRoadsData
         RegisterRoad(
             registrator,
             GroundRoadIds.TwoWayCurve,
-            "Ground road: two-way 90-degree curve",
-            "Two-way 90-degree road curve. Rotate or reflect while placing " +
-            "to obtain the required turn.",
+            GroundRoadTexts.Get("legacy.two-way-curve.name"),
+            GroundRoadTexts.Get("legacy.two-way-curve.description"),
             ImmutableArray.Create(
                 Lane(
                     Curve(
@@ -773,9 +787,8 @@ internal static class GroundRoadsData
         RegisterRoad(
             registrator,
             GroundRoadIds.TwoWayTileStraight,
-            "Ground road tiles: straight",
-            "Four-tile, non-blocking two-way road section. Use the straight " +
-            "line tool; access nodes are inserted automatically.",
+            GroundRoadTexts.Get("legacy.tile-straight.name"),
+            GroundRoadTexts.Get("legacy.tile-straight.description"),
             ImmutableArray.Create(
                 Lane(
                     Curve(
@@ -802,8 +815,8 @@ internal static class GroundRoadsData
         RegisterEntrance(
             registrator,
             GroundRoadIds.TwoWayTileAccess,
-            "Ground road tiles: access node",
-            "Automatic terrain access for straight Ground Road tiles.",
+            GroundRoadTexts.Get("legacy.tile-access.name"),
+            GroundRoadTexts.Get("legacy.tile-access.description"),
             ImmutableArray.Create(
                 Lane(
                     Curve(
@@ -828,9 +841,8 @@ internal static class GroundRoadsData
         RegisterAccessibleSegment(
             registrator,
             GroundRoadIds.TwoWayNativeStraightV2,
-            "Ground road: native straight line",
-            "Four-tile native two-way road section. Every section has terrain " +
-            "entrances and exits for both directions.",
+            GroundRoadTexts.Get("legacy.native-straight.name"),
+            GroundRoadTexts.Get("legacy.native-straight.description"),
             ImmutableArray.Create(
                 // Main lanes are split in the middle. The internal graph node
                 // is where the four short terrain connectors join.
@@ -909,19 +921,16 @@ internal static class GroundRoadsData
         RegisterHighwayRamp(
             registrator,
             GroundRoadIds.HighwayOnRamp,
-            "Autobahnauffahrt",
-            "Einbahnige Zufahrt vom Gelände auf die Autobahn. Der Pfeil " +
-            "zeigt in Fahrtrichtung; die Straßenseite muss an einem " +
-            "Autobahn-Segmentende einrasten.",
+            GroundRoadTexts.Get("prototype.on-ramp.name"),
+            GroundRoadTexts.Get("prototype.on-ramp.description"),
             isOnRamp: true,
             ImmutableArray<ToolbarEntryData>.Empty);
 
         RegisterHighwayRamp(
             registrator,
             GroundRoadIds.HighwayOffRamp,
-            "Autobahnabfahrt",
-            "Einbahnige Ausfahrt von der Autobahn ins Gelände. Der Pfeil " +
-            "zeigt in Fahrtrichtung; Auf- und Abfahrten sind unabhängig.",
+            GroundRoadTexts.Get("prototype.off-ramp.name"),
+            GroundRoadTexts.Get("prototype.off-ramp.description"),
             isOnRamp: false,
             ImmutableArray<ToolbarEntryData>.Empty);
 
@@ -931,9 +940,8 @@ internal static class GroundRoadsData
         RegisterHighwayRamp(
             registrator,
             GroundRoadIds.HighwayOnRampV3,
-            "Autobahnauffahrt",
-            "Gerichtete Zufahrt vom Gelände auf die Autobahn. Die " +
-            "Richtung wird vom gewählten Fahrspurknoten bestimmt.",
+            GroundRoadTexts.Get("prototype.on-ramp.name"),
+            GroundRoadTexts.Get("prototype.on-ramp-v3.description"),
             isOnRamp: true,
             ImmutableArray<ToolbarEntryData>.Empty,
             hasFixedWorldDirection: true);
@@ -941,9 +949,8 @@ internal static class GroundRoadsData
         RegisterHighwayRamp(
             registrator,
             GroundRoadIds.HighwayOffRampV3,
-            "Autobahnabfahrt",
-            "Gerichtete Ausfahrt von der Autobahn ins Gelände. Die " +
-            "Richtung wird vom gewählten Fahrspurknoten bestimmt.",
+            GroundRoadTexts.Get("prototype.off-ramp.name"),
+            GroundRoadTexts.Get("prototype.off-ramp-v3.description"),
             isOnRamp: false,
             ImmutableArray<ToolbarEntryData>.Empty,
             hasFixedWorldDirection: true);
@@ -992,37 +999,46 @@ internal static class GroundRoadsData
         var registered = 0;
         foreach (var track in registrator.PrototypesDb.All<TrainTrackProto>()
                      .Where(x => !x.IsObsolete &&
-                                 !x.IgnoreInPathFinder &&
-                                 x.IsElevated))
+                                  !x.IgnoreInPathFinder &&
+                                  x.IsElevated))
         {
-            var trajectory = track.TrajectoryData;
-            var id = new StaticEntityProto.ID(
-                "GroundRoads_HighwayTrack_" + SanitizeId(track.Id.Value));
+            foreach (var profile in HighwayRoadProfile.All)
+            {
+                var id = new StaticEntityProto.ID(
+                    "GroundRoads_HighwayTrack_" + profile.IdToken +
+                    SanitizeId(track.Id.Value));
+                var normalLanes = CreateHighwayLaneTrajectories(
+                    track.TrajectoryData.Segments,
+                    profile,
+                    correctsReflectedHandedness: false);
+                var reflectedLanes = CreateHighwayLaneTrajectories(
+                    track.TrajectoryData.Segments,
+                    profile,
+                    correctsReflectedHandedness: true);
 
-            CreateHighwayLaneTrajectories(
-                trajectory.Segments,
-                out var forward,
-                out var reverse);
+                RegisterHighwaySegmentVariant(
+                    registrator,
+                    id,
+                    track,
+                    normalLanes,
+                    correctsReflectedHandedness: false,
+                    profile);
 
-            RegisterHighwaySegmentVariant(
-                registrator,
-                id,
-                track,
-                forward,
-                reverse,
-                correctsReflectedHandedness: false);
-
-            // A reflection swaps left and right. Reversing the opposite lane
-            // gives us the same centre-line geometry with the correct lane on
-            // the correct side after the reflected world transform.
-            RegisterHighwaySegmentVariant(
-                registrator,
-                new StaticEntityProto.ID(id.Value + "_MirroredV3"),
-                track,
-                ReverseLaneTrajectory(reverse),
-                ReverseLaneTrajectory(forward),
-                correctsReflectedHandedness: true);
-            registered += 2;
+                // Keep the historical suffix for Standard so existing saves
+                // resolve the exact same reflected prototype ID.
+                var mirroredSuffix =
+                    profile.Tier == HighwayTier.Standard
+                        ? "_MirroredV3"
+                        : "_MirroredV1";
+                RegisterHighwaySegmentVariant(
+                    registrator,
+                    new StaticEntityProto.ID(id.Value + mirroredSuffix),
+                    track,
+                    reflectedLanes,
+                    correctsReflectedHandedness: true,
+                    profile);
+                registered += 2;
+            }
         }
 
         Log.Info(
@@ -1034,51 +1050,63 @@ internal static class GroundRoadsData
         ProtoRegistrator registrator,
         StaticEntityProto.ID id,
         TrainTrackProto track,
-        RoadLaneTrajectory forward,
-        RoadLaneTrajectory reverse,
-        bool correctsReflectedHandedness)
+        ImmutableArray<RoadLaneTrajectory> laneTrajectories,
+        bool correctsReflectedHandedness,
+        HighwayRoadProfile profile)
     {
         var trajectory = track.TrajectoryData;
-        var curveOffset = correctsReflectedHandedness
-            ? (-1.0).Tiles()
-            : 1.0.Tiles();
-        var lanes = ImmutableArray.Create(
-            new RoadLaneSpec(
+        var laneSpecs = new ImmutableArrayBuilder<RoadLaneSpec>(
+            laneTrajectories.Length);
+        var laneDataBuilder = new ImmutableArrayBuilder<RoadLaneMetadata>(
+            laneTrajectories.Length);
+        for (var pairIndex = 0;
+             pairIndex < profile.LaneOffsetsTiles.Length;
+             pairIndex++)
+        {
+            var signedOffset = correctsReflectedHandedness
+                ? -profile.LaneOffsetsTiles[pairIndex]
+                : profile.LaneOffsetsTiles[pairIndex];
+            var forward = laneTrajectories[pairIndex * 2];
+            var reverse = laneTrajectories[pairIndex * 2 + 1];
+            laneSpecs[pairIndex * 2] = new RoadLaneSpec(
                 trajectory.TrajectoryCurve,
-                curveOffset,
+                signedOffset.Tiles(),
                 trajectory.HeightCurve,
                 BasicLane,
-                BasicLane),
-            new RoadLaneSpec(
+                BasicLane);
+            laneSpecs[pairIndex * 2 + 1] = new RoadLaneSpec(
                 trajectory.TrajectoryCurve.ReverseControlPoints(),
-                curveOffset,
+                signedOffset.Tiles(),
                 ReverseHeightCurve(trajectory.HeightCurve),
                 BasicLane,
-                BasicLane));
-        var laneData = ImmutableArray.Create(
-            new RoadLaneMetadata(
+                BasicLane);
+            laneDataBuilder[pairIndex * 2] = new RoadLaneMetadata(
                 forward.LaneCenterSamples.First,
                 forward.LaneCenterSamples.Last,
                 trajectory.Segments.StartDirection,
                 trajectory.Segments.EndDirection,
                 BasicLane,
                 BasicLane,
-                forward.SegmentLengthsPrefixSums.Last),
-            new RoadLaneMetadata(
+                forward.SegmentLengthsPrefixSums.Last);
+            laneDataBuilder[pairIndex * 2 + 1] = new RoadLaneMetadata(
                 reverse.LaneCenterSamples.First,
                 reverse.LaneCenterSamples.Last,
                 trajectory.Segments.EndDirection.Inversed(),
                 trajectory.Segments.StartDirection.Inversed(),
                 BasicLane,
                 BasicLane,
-                reverse.SegmentLengthsPrefixSums.Last));
-        var laneTrajectories = ImmutableArray.Create(forward, reverse);
+                reverse.SegmentLengthsPrefixSums.Last);
+        }
+        var lanes = laneSpecs.GetImmutableArrayAndClear();
+        var laneData = laneDataBuilder.GetImmutableArrayAndClear();
         var constructionCosts =
             ShouldUseConstructionMaterialsForHighwaySegment(
                 track.HasElevationChange)
-                ? HighwayConstructionCosts.CreateForLength(
+                ? HighwayConstructionCosts.CreateForScaledLength(
                     registrator,
-                    forward.SegmentLengthsPrefixSums.Last.Value.ToDouble())
+                    laneTrajectories[0].SegmentLengthsPrefixSums.Last.Value
+                        .ToDouble(),
+                    profile.ConstructionWidthScale)
                 : EntityCosts.None;
 
         registrator.PrototypesDb.Add(
@@ -1086,9 +1114,18 @@ internal static class GroundRoadsData
                 id,
                 Proto.CreateStr(
                     id,
-                    "Autobahnsegment",
-                    "Vom Schienenplaner erzeugtes Asphaltsegment mit " +
-                    "Kiesunterbau."),
+                    GroundRoadTexts.Get(
+                        profile.Tier == HighwayTier.Standard
+                            ? "prototype.highway-segment.name"
+                            : profile.Tier == HighwayTier.HeavyT3
+                                ? "prototype.highway-segment-t3.name"
+                                : "prototype.highway-segment-t4.name"),
+                    GroundRoadTexts.Get(
+                        profile.Tier == HighwayTier.Standard
+                            ? "prototype.highway-segment.description"
+                            : profile.Tier == HighwayTier.HeavyT3
+                                ? "prototype.highway-segment-t3.description"
+                                : "prototype.highway-segment-t4.description")),
                 CreateMinimalHighwayLayout(track.Layout),
                 constructionCosts,
                 track.MaxSpeedTilesPerTick.Min(
@@ -1102,7 +1139,8 @@ internal static class GroundRoadsData
                     ImmutableArray<ToolbarEntryData>.Empty,
                     RoadIcon),
                 track,
-                correctsReflectedHandedness));
+                correctsReflectedHandedness,
+                profile));
     }
 
     private static bool ShouldUseConstructionMaterialsForHighwaySegment(
@@ -1165,7 +1203,47 @@ internal static class GroundRoadsData
         out RoadLaneTrajectory forward,
         out RoadLaneTrajectory reverse)
     {
-        const int laneOffsetTiles = 1;
+        CreateHighwayLaneTrajectoryPair(
+            source,
+            Fix32.One,
+            out forward,
+            out reverse);
+    }
+
+    private static ImmutableArray<RoadLaneTrajectory>
+        CreateHighwayLaneTrajectories(
+            TrainTrackSegmentsRel source,
+            HighwayRoadProfile profile,
+            bool correctsReflectedHandedness)
+    {
+        var result = new ImmutableArrayBuilder<RoadLaneTrajectory>(
+            profile.LaneOffsetsTiles.Length * 2);
+        for (var pairIndex = 0;
+             pairIndex < profile.LaneOffsetsTiles.Length;
+             pairIndex++)
+        {
+            CreateHighwayLaneTrajectoryPair(
+                source,
+                profile.LaneOffsetsTiles[pairIndex],
+                out var forward,
+                out var reverse);
+            result[pairIndex * 2] = correctsReflectedHandedness
+                ? ReverseLaneTrajectory(reverse)
+                : forward;
+            result[pairIndex * 2 + 1] = correctsReflectedHandedness
+                ? ReverseLaneTrajectory(forward)
+                : reverse;
+        }
+
+        return result.GetImmutableArrayAndClear();
+    }
+
+    private static void CreateHighwayLaneTrajectoryPair(
+        TrainTrackSegmentsRel source,
+        Fix32 laneOffsetTiles,
+        out RoadLaneTrajectory forward,
+        out RoadLaneTrajectory reverse)
+    {
         var count = source.Positions.Length;
         var forwardPositions =
             new ImmutableArrayBuilder<RelTile3f>(count);
@@ -1246,8 +1324,8 @@ internal static class GroundRoadsData
         // A fully copied train footprint therefore rejects alternating road
         // pieces. One neutral occupied tile near the piece centre keeps the
         // entity valid and saveable without colliding at every seam. The
-        // placement controller separately samples terrain below the full
-        // four-tile asphalt width before a plan can be committed.
+        // placement controller separately samples terrain below the active
+        // profile's complete asphalt width before a plan can be committed.
         var centerX = (source.CoreMin.X + source.CoreMax.X) / 2;
         var centerY = (source.CoreMin.Y + source.CoreMax.Y) / 2;
         var selectedCoord = source.LayoutTiles.IsEmpty
@@ -1768,8 +1846,8 @@ internal static class GroundRoadsData
                 Ids.TerrainTileSurfaces.ConcreteReinforced);
         var strings = Proto.CreateStr(
             GroundRoadIds.RoadTileSurface,
-            "Ground road surface (legacy)",
-            "Compatibility prototype for saves made with Ground Roads 1.3.1.");
+            GroundRoadTexts.Get("legacy.surface.name"),
+            GroundRoadTexts.Get("legacy.surface.description"));
         var graphics = new TerrainTileSurfaceProto.Gfx(
             source.Graphics.TextureSpec,
             source.Graphics.EdgesSpec,

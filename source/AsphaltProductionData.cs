@@ -33,7 +33,7 @@ internal sealed class AsphaltProductionData : IModData
         ProductBuilder.AddLooseProduct(
             registrator,
             GroundRoadMaterialIds.Asphalt,
-            name: "Asphalt",
+            name: GroundRoadTexts.Get("product.asphalt.name"),
             material: Assets.Base.Products.Loose.SlagCrushed_mat,
             family: ProductBuilder.PileSmooth,
             icon: Assets.Base.Products.Icons.SlagCrushed_svg,

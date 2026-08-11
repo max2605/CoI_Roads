@@ -1,14 +1,44 @@
-Highway Roads 0.4.1
+Highway Roads 0.5.0
 ===================
 
-Kompatibel mit Captain of Industry v0.8.6 bis v0.8.6c.
+Version: 0.5.0
 
-Highway Roads erweitert Captain of Industry um flüssig planbare, zweispurige
-Autobahnen. Fahrzeuge wählen geeignete Autobahnrouten automatisch, bleiben auch
-in Kurven sauber auf ihrer Spur und verlassen die Fahrbahn wieder in Richtung
-ihres tatsächlichen Ziels. Auf passenden Autobahnabschnitten erreichen sie bis
-zu 140 % ihrer normalen Maximalgeschwindigkeit; gleichzeitig sinkt ihr
-Wartungsbedarf auf 50 % des Basiswerts.
+Kompatibel mit Captain of Industry v0.8.6c.
+Benötigt MultiLangLib 0.1.0 oder neuer. MultiLangLib und Highway Roads müssen
+im Mod-Manager aktiviert sein.
+Alle sichtbaren Laufzeittexte werden über MultiLangLib aufgelöst. Enthalten sind
+die 21 offiziellen COI-Sprachdateien sowie ein neutrales portugiesisches
+Fallback, insgesamt 22 vollständige Kataloge. Fehlende regionale Texte fallen
+standardmäßig auf Englisch zurück.
+
+Highway Roads erweitert Captain of Industry um flüssig planbare Asphaltstraßen
+für T1/T2-, T3- und massive modifizierte T4-Fahrzeuge. Fahrzeuge wählen
+geeignete Autobahnrouten automatisch, bleiben auch in Kurven sauber auf ihrer
+Spur und verlassen die Fahrbahn wieder in Richtung ihres tatsächlichen Ziels.
+Auf passenden Autobahnabschnitten erreichen sie bis zu 140 % ihrer normalen
+Maximalgeschwindigkeit; gleichzeitig sinkt ihr Wartungsbedarf auf 50 % des
+Basiswerts.
+
+Straßenklassen und Fahrspuren
+-----------------------------
+
+Im Autobahn-Menü stehen drei getrennte, spielstandsichere Straßenfamilien:
+
+  - T1/T2-Autobahn: unveränderte vier Kacheln Gesamtbreite, eine zwei Kacheln
+    breite Spur je Richtung. Vorhandene IDs, Geometrie und Spielstände bleiben
+    exakt kompatibel.
+  - T3-Schwerlaststraße: acht Kacheln Gesamtbreite, eine echte vier Kacheln
+    breite Spur je Richtung. Damit können sich Vanilla-T3 und ähnlich große
+    Mod-Fahrzeuge ohne optische Überlappung begegnen.
+  - T4-Mehrspurstraße: sechzehn Kacheln Gesamtbreite, zwei echte vier Kacheln
+    breite Spuren je Richtung. Schnelle Fahrzeuge bevorzugen bei der
+    Routenwahl die innere Überholspur, langsamere die äußere Fahrspur.
+
+Die T4-Spurwahl erfolgt vor Fahrtbeginn als stabiler Bestandteil des nativen
+Road-Pfads. Ein riskantes Umschreiben laufender Fahrzeugrouten findet nicht
+statt. Damit entsteht eine verlässliche Geschwindigkeitsaufteilung; dynamisches
+Aus- und Wiedereinscheren hinter einem bereits eingeholten Fahrzeug ist in
+Version 0.5.0 noch nicht aktiv.
 
 Ressourcen und Straßenbau
 -------------------------
@@ -18,10 +48,12 @@ Mischer I und II stellen aus 19 Kies und 1 Schweröl insgesamt 20 Asphalt her.
 Das entspricht einer vereinfachten Asphaltmischung aus 95 % Gesteinskörnung und
 5 % bitumenartigem Bindemittel.
 
-Neue Autobahnen sind keine kostenlosen Sofortbauten mehr. Für jede aufgerundete
-waagerechte Längenkachel werden 2 Kies für Unterbau und Tragschicht sowie
-1 Asphalt für Binder- und Deckschicht benötigt. Waagerechte Geraden und Kurven
-verwenden ihre tatsächliche Länge. Geneigte G4/G8-Teilstücke sind bereits
+Neue Autobahnen sind keine kostenlosen Sofortbauten mehr. Die vier Kacheln
+breite Standardstraße benötigt für jede aufgerundete waagerechte Längenkachel
+2 Kies für Unterbau und Tragschicht sowie 1 Asphalt für Binder- und Deckschicht.
+T3 verdoppelt und T4 vervierfacht diese Mengen entsprechend ihrer gepflasterten
+Breite. Waagerechte Geraden und Kurven verwenden ihre tatsächliche Länge.
+Geneigte G4/G8-Teilstücke sind bereits
 kostenfrei. Enthält ein zusammenhängender, vollständig vorvalidierter Bauplan
 mindestens ein sichtbar auf Pfeilern stehendes flaches G0-Teilstück, wird der
 gesamte Plan atomar sofort fertiggestellt. Dadurch kann kein unerreichbarer
@@ -44,7 +76,7 @@ Autobahn bauen
 --------------
 
 1. Im Fahrzeug-Menü die Kategorie „Autobahnen“ öffnen.
-2. „Autobahn bauen“ auswählen.
+2. „T1/T2-Autobahn“, „T3-Schwerlaststraße“ oder „T4-Mehrspurstraße“ auswählen.
 3. Mit E wird die aktuelle Bauhöhe um eine Kachel angehoben, mit Q um eine
    Kachel abgesenkt. Wie beim Gleisbau zeigen zwei Schaltflächen die belegten
    Tasten an; der Bereich reicht von 0 bis zur nativen Pfeilerhöhe von 6
@@ -114,7 +146,9 @@ Im Autobahn-Menü stehen drei zusätzliche Knotenwerkzeuge bereit:
   - vierarmiger Kreisverkehr mit einheitlicher Fahrtrichtung für Rechtsverkehr
 
 Die Knotenwerkzeuge rasten ausschließlich an freien Enden normaler
-Autobahnsegmente ein. Zwei Kreuzungen beziehungsweise Kreisverkehre werden
+T1/T2-Autobahnsegmente ein. T3 und T4 besitzen in Version 0.5.0 bewusst eigene
+breite, durchgehende Netze; Standardknoten werden nicht seitlich auf massive
+Spuren verengt. Zwei Kreuzungen beziehungsweise Kreisverkehre werden
 nicht direkt miteinander verschnappt: Dazwischen muss ein kurzes
 Autobahnsegment liegen; 8 bis 16 Kacheln Abstand sind empfehlenswert. Dadurch
 hat die native Fahrzeugsteuerung zwischen zwei Konfliktbereichen genug Platz.
@@ -186,6 +220,8 @@ Wirkung
 
   - Alle straßenfähigen Fahrzeuge fahren auf Mod-Straßen mit 140 %
     Maximalgeschwindigkeit.
+  - T4 verteilt schnelle Fahrzeuge statisch auf die innere Überholspur und
+    langsamere Fahrzeuge auf die äußere Fahrspur.
   - Auf normalen Autobahnsegmenten folgen Fahrzeuge den Lane-Trajektorien auch
     in Kurven sowie bergauf und bergab. Kreuzungen und Kreisverkehre behalten
     die native Lenkung, damit Übergänge zwischen ihren kurzen Abbiegespuren
@@ -198,7 +234,9 @@ Kompatibilität
 
 Historische Rampen-IDs bleiben ausschließlich zum Laden früherer Spielstände
 registriert. Sie erscheinen nicht im Baumenü und sind kein Teil neuer Routen.
-Kreuzungen und Kreisverkehr verwenden stabile V1-IDs.
+Die bisherige T1/T2-Straße sowie Kreuzungen und Kreisverkehr behalten ihre
+bestehenden IDs. T3- und T4-Segmente verwenden neue, getrennte V1-IDs; dadurch
+ändert das Update keine bereits gebaute Fahrbahngeometrie.
 
 Der Mod kann einem bestehenden Spielstand hinzugefügt werden. Sobald ein
 Straßenbauteil gespeichert wurde, darf der Mod aus diesem Spielstand nicht

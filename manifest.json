@@ -1,9 +1,9 @@
 {
   "id": "GroundRoads",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "display_name": "Highway Roads",
-  "description_short": "Build resource-supplied asphalt highways with Q/E elevation, concrete supports, terrain ramps, junctions, and automatic routing.",
-  "description_long": "Highway Roads adds smoothly planned, two-way asphalt highways for road vehicles. Asphalt is a storable loose product mixed from 19 gravel and 1 heavy oil in industrial mixers; ground-supported horizontal highway construction sites consume a two-part gravel foundation and one-part asphalt surface through the native construction and truck-delivery system. Costs scale with horizontal segment length and paved node area. Inclined G4/G8 prototypes are already cost-free. If one connected, prevalidated build plan contains at least one visibly supported flat G0 piece, the entire plan completes immediately as a single atomic batch so no unreachable delivery site can deadlock it. Purely near-ground plans retain their normal gravel and asphalt costs. The multi-pivot construction tool supports flowing curves, repeated S-bends, tangent-continuous extensions, terrain elevation ramps, and exact snapping to free network ports. Its configurable RaiseUp/LowerDown controls (E/Q by default) and matching toolbox buttons move the highway height in one-tile steps from 0 to the native six-tile train-pillar limit. Concrete supports use the train geometry's native pillar candidate positions and allow both flat G0 and inclined G4/G8 surfaces to span lower dry terrain. Terrain may rise only 0.02 tiles above the road plane, keeping the asphalt and edge markings visible at a dumped plateau crest; higher terrain requires raising the preview. A first click up to 24 tiles in front of an ordinary free end continues that highway directionally, including from one-tile segments and onto higher dumped ground. Clicking a junction or roundabout body selects a suitable free arm, while pointing directly at an arm takes priority. Ramp endpoints remain horizontal; the planner uses its native 12.5% and 25% grades, prefers gentler ramps where space permits, and biases elevation routes toward their higher endpoint. Water, map edges, entities, and other highways remain blocked. Dedicated tools place three-arm T intersections, four-arm + intersections, and right-hand-traffic roundabouts in all 16 planner directions. Vehicles automatically compare their normal route with reachable highway alternatives, follow the selected three-dimensional lanes through every completed node, and enter or leave only at horizontal transitions that match the terrain height. Road-capable vehicles can reach 140% of their normal maximum speed on completed highway-network entities and use 50% of their base maintenance while driving on mod roads. Controls: E raises and Q lowers the requested height, left-click places the start and additional pivots, double-click builds, right-click cancels, and Shift-double-click continues directly from the completed endpoint. The mod can be added to existing saves, but should not be removed after highway pieces have been built.",
+  "description_short": "Build 4-, 8-, and 16-tile asphalt highways for T1/T2, T3, and massive T4 traffic, with ramps and automatic routing.",
+  "description_long": "Highway Roads adds three smoothly planned asphalt road families: the save-compatible four-tile T1/T2 highway, an eight-tile T3 heavy road with one four-tile lane per direction, and a sixteen-tile T4 road with two four-tile lanes per direction. Fast vehicles statically prefer T4's inner passing lanes while slower vehicles prefer its outer driving lanes. Every family supports flowing curves, repeated S-bends, terrain ramps, Q/E elevation, concrete supports, automatic terrain access, native construction sites, width-scaled gravel and asphalt costs, 140% road speed, and 50% base maintenance. MultiLangLib supplies complete runtime text catalogs for every official game locale plus a neutral Portuguese fallback. Existing prototype IDs and geometry remain unchanged; T3 and T4 use new save-stable IDs. Standard-width T intersections, four-way intersections, and roundabouts remain available for the T1/T2 family. Controls: E raises and Q lowers the requested height, left-click places pivots, double-click builds, right-click cancels, and Shift-double-click continues from the endpoint. The mod can be added to existing saves, but should not be removed after highway pieces have been built.",
   "authors": [
     "Maxim",
     "TaskEcho"
@@ -12,9 +12,12 @@
     "GroundRoads.dll"
   ],
   "primary_mod_class_name": "GroundRoads.GroundRoadsMod",
+  "mod_dependencies": [
+    "MultiLangLib>=0.1.0"
+  ],
   "non_locking_dll_load": true,
   "can_add_to_saved_game": true,
   "can_remove_from_saved_game": false,
-  "min_game_version": "0.8.6",
+  "min_game_version": "0.8.6c",
   "max_verified_game_version": "0.8.6c"
 }
