@@ -36,6 +36,23 @@ function Get-StreamSha256 {
     }
 }
 
+function Get-NormalizedTextSha256 {
+    param([Parameter(Mandatory = $true)] [string] $Path)
+
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    $textContent = [System.IO.File]::ReadAllText($Path, $strictUtf8)
+    $normalizedText = $textContent.Replace("`r`n", "`n").Replace("`r", "`n")
+    $normalizedBytes = $strictUtf8.GetBytes($normalizedText)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString(
+            $sha256.ComputeHash($normalizedBytes))).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
 function Get-FullPath {
     param(
         [Parameter(Mandatory = $true)] [string] $Path,
@@ -82,10 +99,10 @@ if (-not ([string] $assemblyInfo.ProductVersion).StartsWith($Version, [System.St
 }
 
 $expectedFiles = @(
-    [pscustomobject] @{ Source = $manifestPath; Archive = 'GroundRoads/manifest.json' }
-    [pscustomobject] @{ Source = $changelogPath; Archive = 'GroundRoads/changelog.txt' }
-    [pscustomobject] @{ Source = $readmePath; Archive = 'GroundRoads/readme.txt' }
-    [pscustomobject] @{ Source = $assemblyFullPath; Archive = 'GroundRoads/GroundRoads.dll' }
+    [pscustomobject] @{ Source = $manifestPath; Archive = 'GroundRoads/manifest.json'; NormalizeText = $true }
+    [pscustomobject] @{ Source = $changelogPath; Archive = 'GroundRoads/changelog.txt'; NormalizeText = $true }
+    [pscustomobject] @{ Source = $readmePath; Archive = 'GroundRoads/readme.txt'; NormalizeText = $true }
+    [pscustomobject] @{ Source = $assemblyFullPath; Archive = 'GroundRoads/GroundRoads.dll'; NormalizeText = $false }
 )
 
 $languageFiles = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'lang') -Filter '*.json' -File | Sort-Object Name)
@@ -95,6 +112,7 @@ foreach ($languageFile in $languageFiles) {
     $expectedFiles += [pscustomobject] @{
         Source = $languageFile.FullName
         Archive = "GroundRoads/lang/$($languageFile.Name)"
+        NormalizeText = $true
     }
 }
 $expectedFiles = @($expectedFiles | Sort-Object Archive)
@@ -135,7 +153,12 @@ try {
             finally {
                 $entryStream.Dispose()
             }
-            $sourceHash = (Get-FileHash -LiteralPath $expectedFile.Source -Algorithm SHA256).Hash
+            $sourceHash = if ($expectedFile.NormalizeText) {
+                Get-NormalizedTextSha256 -Path $expectedFile.Source
+            }
+            else {
+                (Get-FileHash -LiteralPath $expectedFile.Source -Algorithm SHA256).Hash
+            }
             Assert-Equal -Label "content hash for $($expectedFile.Archive)" -Actual $archiveHash -Expected $sourceHash
         }
 

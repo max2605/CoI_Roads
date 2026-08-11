@@ -119,10 +119,10 @@ if (-not $SkipGitChecks) {
 }
 
 $payload = @(
-    [pscustomobject] @{ Source = $manifestPath; Archive = 'GroundRoads/manifest.json' }
-    [pscustomobject] @{ Source = $changelogPath; Archive = 'GroundRoads/changelog.txt' }
-    [pscustomobject] @{ Source = $readmePath; Archive = 'GroundRoads/readme.txt' }
-    [pscustomobject] @{ Source = $assemblyFullPath; Archive = 'GroundRoads/GroundRoads.dll' }
+    [pscustomobject] @{ Source = $manifestPath; Archive = 'GroundRoads/manifest.json'; NormalizeText = $true }
+    [pscustomobject] @{ Source = $changelogPath; Archive = 'GroundRoads/changelog.txt'; NormalizeText = $true }
+    [pscustomobject] @{ Source = $readmePath; Archive = 'GroundRoads/readme.txt'; NormalizeText = $true }
+    [pscustomobject] @{ Source = $assemblyFullPath; Archive = 'GroundRoads/GroundRoads.dll'; NormalizeText = $false }
 )
 
 $languageFiles = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'lang') -Filter '*.json' -File | Sort-Object Name)
@@ -134,6 +134,7 @@ foreach ($languageFile in $languageFiles) {
     $payload += [pscustomobject] @{
         Source = $languageFile.FullName
         Archive = "GroundRoads/lang/$($languageFile.Name)"
+        NormalizeText = $true
     }
 }
 
@@ -178,18 +179,32 @@ try {
                 $entry.LastWriteTime = $releaseTimestamp
                 $entry.ExternalAttributes = 0
 
-                $inputStream = [System.IO.File]::OpenRead($item.Source)
+                $entryStream = $entry.Open()
                 try {
-                    $entryStream = $entry.Open()
-                    try {
-                        $inputStream.CopyTo($entryStream)
+                    if ($item.NormalizeText) {
+                        $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+                        $textContent = [System.IO.File]::ReadAllText(
+                            $item.Source,
+                            $strictUtf8)
+                        $normalizedText = $textContent.Replace("`r`n", "`n").Replace("`r", "`n")
+                        $normalizedBytes = $strictUtf8.GetBytes($normalizedText)
+                        $entryStream.Write(
+                            $normalizedBytes,
+                            0,
+                            $normalizedBytes.Length)
                     }
-                    finally {
-                        $entryStream.Dispose()
+                    else {
+                        $inputStream = [System.IO.File]::OpenRead($item.Source)
+                        try {
+                        $inputStream.CopyTo($entryStream)
+                        }
+                        finally {
+                            $inputStream.Dispose()
+                        }
                     }
                 }
                 finally {
-                    $inputStream.Dispose()
+                    $entryStream.Dispose()
                 }
             }
         }
